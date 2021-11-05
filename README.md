@@ -1,0 +1,5 @@
+# Engineering diploma
+## Author: Krzysztof Juszczyk
+## Topic: Implementation of the system for managing surplus electricity production from a photovoltaic installation.
+## Description:
+There is now an increased trend for investing in photovoltaic installations. The most favorable settlement conditions for prosumers proposed by energy suppliers are a zero electricity bill in a given settlement period. In this situation, when we experience particularly sunny weather, the excess electricity generated is irretrievably lost by producer. We can therefore lean towards the use of another technology that is gaining popularity, blockchain and the phenomenon of "mining" cryptocurrencies using the Proof of Work method. The system is designed to constantly monitor the balance of electricity consumption in the household in order to manage in real time hardware resources that generate digital income and maximize profit from solar energy.
