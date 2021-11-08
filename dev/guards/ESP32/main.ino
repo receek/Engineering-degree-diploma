@@ -1,6 +1,11 @@
 /* ESP32 board */
+#include <Arduino.h>
 #include <WiFi.h>
 #include <MQTT.h>
+
+#include "timer_wrapper.hpp"
+#include "utils.hpp"
+
 
 const char WIFI_SSID[] = "NETIASPOT-2.4GHz-YC9V";
 const char WIFI_PASSWORD[] = "xXjgfYMt";
@@ -39,6 +44,7 @@ int pinLed;
 int val = 0;
 
 void connectMQTTClient() {
+    TimerWrapper & tttt = getTimerInstance();
     Serial.println("MQTT Client connecting...");
     
     while (WiFi.status() != WL_CONNECTED) {
@@ -170,5 +176,5 @@ void loop() {
         Serial.println("In is LOW");
     }
 
-    delay(1000);
+    delay(100);
 }
