@@ -3,14 +3,16 @@
 #include <WiFi.h>
 #include <MQTT.h>
 
-#include "timer_wrapper.hpp"
-#include "utils.hpp"
+#include "src/miner.hpp"
+#include "src/globals.hpp"
+#include "src/timer_wrapper.hpp"
+#include "src/utils.hpp"
 
 
-const char WIFI_SSID[] = "NETIASPOT-2.4GHz-YC9V";
-const char WIFI_PASSWORD[] = "xXjgfYMt";
+const char WIFI_SSID[] = "dom";
+const char WIFI_PASSWORD[] = "0987654321";
 
-const IPAddress IP_MQTT_BROKER(192, 168, 100, 5);
+const IPAddress IP_MQTT_BROKER(192, 168, 1, 129);
 const int PORT_MQTT_BROKER = 1883;
 const char DEV_NAME[] = "Mega0001";
 const char USER[] = "broker";
@@ -18,6 +20,9 @@ const char PASSWORD[] = "broker";
 
 const String GUARD_STARTED_TOPIC = String("guards/started");
 const String GUARD_CONFIG_TOPIC = String("guards/config/") + DEV_NAME;
+const String GUARD_CONFIGURED_TOPIC = String("guards/configured");
+
+const String MINERS_CONTROL_TOPIC = String("guards/") + DEV_NAME + "/miners/+";
 
 const String GUARD_POWER_RUN_TOPIC = String("guards/") + DEV_NAME + String("/power");
 const String GUARD_SOFT_RESET_RUN_TOPIC = String("guards/") + DEV_NAME + String("/soft_reset");
@@ -26,10 +31,15 @@ const String GUARD_HARD_RESET_RUN_TOPIC = String("guards/") + DEV_NAME + String(
 const String GUARD_LED_REQUEST_TOPIC = String("guards/") + DEV_NAME + String("/LED/request");
 const String GUARD_LED_STATE_TOPIC = String("guards/") + DEV_NAME + String("/LED/state");
 
-WiFiClient net;
+TimerWrapper& timer = getTimerInstance();
+
+WiFiClient network;
 MQTTClient client;
 
-bool configIsSet = false; 
+Miner miners[MAX_MINERS];
+u32 minersCount = -1;
+
+bool isConfigSet = false; 
 bool runPower = false;
 bool runSoftReset = false;
 bool runHardReset = false;
@@ -44,13 +54,14 @@ int pinLed;
 int val = 0;
 
 void connectMQTTClient() {
-    TimerWrapper & tttt = getTimerInstance();
     Serial.println("MQTT Client connecting...");
     
     while (WiFi.status() != WL_CONNECTED) {
         Serial.print(".");
         delay(500);
     }
+
+    Serial.println("WiFi connected!");
 
     while (!client.connect(DEV_NAME, USER, PASSWORD)) {
         delay(1000);
@@ -60,86 +71,129 @@ void connectMQTTClient() {
 }
 
 
-void configurePorts() {
-    pinMode(pinPower, OUTPUT);
-    pinMode(pinReset, OUTPUT);
-    pinMode(pinLed, INPUT);
+void applyConfig() {
+    for (u32 i = 0; i < minersCount; ++i) {
+        /* Set pinouts */
+        digitalWrite(miners[i].pinPower, HIGH);
+        digitalWrite(miners[i].pinReset, HIGH);
+        pinMode(miners[i].pinPower, OUTPUT);
+        pinMode(miners[i].pinReset, OUTPUT);
+        pinMode(miners[i].pinLed, INPUT);
+    
+        /* Check miner state */
+        delay(100);
+        miners[i].state = digitalRead(miners[i].pinLed) == HIGH ?
+            Running :
+            PoweredOff;
 
-    digitalWrite(pinPower, HIGH);
-    digitalWrite(pinReset, HIGH);
+    }
+
+    /* Subscribe miner control topic */
+    client.subscribe(MINERS_CONTROL_TOPIC);
 }
 
-void parsePorts(String &payload) {
-    int from = 0;
-    int to = 0;
+void parseConfig(String &payload) {
+    /* 
+    Assume that message format is:
+    "miners_count miner0_name miner0_pinset miner1_name miner1_pinset ... "
+    */
+
+    u32 from = 0;
+    u32 to = 0;
+    u32 length = payload.length();
+
+    u8 pinset;
+    String name;
 
     while (payload[to] != ' ')
       to++;
-    pinPower = payload.substring(from, to).toInt();
+    minersCount = payload.substring(from, to).toInt();
     
     from = to = to + 1;
-    while (payload[to] != ' ')
-      to++;
-    pinReset = payload.substring(from, to).toInt();
+    
+    for (u32 i = 0; i < minersCount; ++i) {
+        while (payload[to] != ' ') 
+            to++;
+        name = payload.substring(from, to);
 
-    from = to + 1;
-    pinLed = payload.substring(to).toInt();
+        from = to = to + 1;
+        while (to < length && payload[to] != ' ')
+            to++;
+        pinset = payload.substring(from, to).toInt();
 
-    configIsSet = true;
-    client.unsubscribe("guards/config/Mega0001");
+        miners[i].setConfiguration(pinset, name);
+    }
+
+    isConfigSet = true;
 }
 
-void messageReceived(String &topic, String &payload) {
+void startUpMessageReceiver(String &topic, String &payload) {
     Serial.println("incoming: " + topic + " = " + payload);
 
-    if (topic == GUARD_POWER_RUN_TOPIC) {
-        runPower = true;
-    } else if (topic == GUARD_SOFT_RESET_RUN_TOPIC) {
-        runSoftReset = true;
-    } else if (topic == GUARD_LED_REQUEST_TOPIC) {
-        runHardReset = true;
-    } else if (topic == GUARD_LED_REQUEST_TOPIC) {
-        ledRequested = true;
-    } else if (topic == GUARD_CONFIG_TOPIC) {
-        parsePorts(payload);
+    if (topic == GUARD_CONFIG_TOPIC) {
+        parseConfig(payload);
+    } else {
+        Serial.println("ERROR: Undefined topic arrived!");
+        Serial.print("Topic: ");
+        Serial.println(topic);
+        Serial.print("Payload: ");
+        Serial.println(payload);
+    }
+}
+
+void printConfigSummary() {
+    Serial.printf("Avaible miners under guard control: %d\n", minersCount);
+    for (u32 i = 0; i < minersCount; ++i) {
+        Serial.printf("Miner %d details:\n", i);
+        Serial.printf("\tName: %s\n", miners[i].name);
+        Serial.printf("\tPinouts:  power=%d, reset=%d, led=%d\n", 
+            miners[i].pinPower, miners[i].pinReset, miners[i].pinLed);
+        Serial.printf("\tState: %s\n", getStateName(miners[i].state));
     }
 }
 
 void setup() {
+    u64 timestamp = 0;
+
     Serial.begin(115200);
 
     /* WiFi configuring */
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     /* MQTT connecting */
-    client.begin(IP_MQTT_BROKER, PORT_MQTT_BROKER, net);
-    client.onMessage(messageReceived);
+    client.begin(IP_MQTT_BROKER, PORT_MQTT_BROKER, network);
+    client.onMessage(startUpMessageReceiver);
     connectMQTTClient();
 
     client.subscribe(GUARD_CONFIG_TOPIC);
-    client.subscribe(GUARD_POWER_RUN_TOPIC);
-    client.publish(GUARD_STARTED_TOPIC, DEV_NAME); // need republishing messages in case main server is not properly started
+    client.publish(GUARD_STARTED_TOPIC, DEV_NAME);
+    timestamp = timer.getTimestamp();
 
     /* Waiting for ports configset message */
-    while (!configIsSet) {
+    while (!isConfigSet) {
+        if (timer.isTimeElapsed(timestamp, 10000)){
+            /* Republishing config request */
+            client.publish(GUARD_STARTED_TOPIC, DEV_NAME);
+            timestamp = timer.getTimestamp();
+        }
+
         client.loop();
         delay(200);
     }
 
-    configurePorts();
+    client.unsubscribe(GUARD_CONFIG_TOPIC);
 
-    Serial.println("Ports configured to:");
-    Serial.print("Power = ");
-    Serial.print(pinPower);
-    Serial.print(", reset = ");
-    Serial.print(pinReset);
-    Serial.print(", LED = ");
-    Serial.println(pinLed);
-    Serial.flush();
+    /* Set pinout and subscribe all needed topics */
+    applyConfig();
 
-    Serial.println(GUARD_POWER_RUN_TOPIC);
+    /* Change message handler */
 
-    pinMode(IN_PIN, INPUT);
+    /* Publish guard is configured */
+    client.publish(GUARD_CONFIGURED_TOPIC, DEV_NAME);
+
+    printConfigSummary();
+
+    while (1) delay(10000);
 }
 
 void loop() {
