@@ -1,5 +1,6 @@
 /* ESP32 board */
 #include <Arduino.h>
+
 #include <WiFi.h>
 #include <MQTT.h>
 
@@ -8,50 +9,13 @@
 #include "src/timer_wrapper.hpp"
 #include "src/utils.hpp"
 
+static WiFiClient network;
+static MQTTClient client;
 
-const char WIFI_SSID[] = "dom";
-const char WIFI_PASSWORD[] = "0987654321";
-
-const IPAddress IP_MQTT_BROKER(192, 168, 1, 129);
-const int PORT_MQTT_BROKER = 1883;
-const char DEV_NAME[] = "Mega0001";
-const char USER[] = "broker";
-const char PASSWORD[] = "broker";
-
-const String GUARD_STARTED_TOPIC = String("guards/started");
-const String GUARD_CONFIG_TOPIC = String("guards/config/") + DEV_NAME;
-const String GUARD_CONFIGURED_TOPIC = String("guards/configured");
-
-const String MINERS_CONTROL_TOPIC = String("guards/") + DEV_NAME + "/miners/+";
-
-const String GUARD_POWER_RUN_TOPIC = String("guards/") + DEV_NAME + String("/power");
-const String GUARD_SOFT_RESET_RUN_TOPIC = String("guards/") + DEV_NAME + String("/soft_reset");
-const String GUARD_HARD_RESET_RUN_TOPIC = String("guards/") + DEV_NAME + String("/hard_reset");
-
-const String GUARD_LED_REQUEST_TOPIC = String("guards/") + DEV_NAME + String("/LED/request");
-const String GUARD_LED_STATE_TOPIC = String("guards/") + DEV_NAME + String("/LED/state");
-
-TimerWrapper& timer = getTimerInstance();
-
-WiFiClient network;
-MQTTClient client;
-
-Miner miners[MAX_MINERS];
-u32 minersCount = -1;
+static Miner miners[MAX_MINERS];
+static i32 minersCount = -1;
 
 bool isConfigSet = false; 
-bool runPower = false;
-bool runSoftReset = false;
-bool runHardReset = false;
-bool ledRequested = false;
-
-
-const int IN_PIN = 35;
-int pinPower;
-int pinReset;
-int pinLed;
-
-int val = 0;
 
 void connectMQTTClient() {
     Serial.println("MQTT Client connecting...");
@@ -72,24 +36,26 @@ void connectMQTTClient() {
 
 
 void applyConfig() {
-    for (u32 i = 0; i < minersCount; ++i) {
+    for (i32 i = 0; i < minersCount; ++i) {
         /* Set pinouts */
         digitalWrite(miners[i].pinPower, HIGH);
         digitalWrite(miners[i].pinReset, HIGH);
         pinMode(miners[i].pinPower, OUTPUT);
         pinMode(miners[i].pinReset, OUTPUT);
         pinMode(miners[i].pinLed, INPUT);
-    
+
         /* Check miner state */
         delay(100);
         miners[i].state = digitalRead(miners[i].pinLed) == HIGH ?
-            Running :
-            PoweredOff;
+            State::Running :
+            State::PoweredOff;
 
     }
 
+    Miner::client = &client;
+
     /* Subscribe miner control topic */
-    client.subscribe(MINERS_CONTROL_TOPIC);
+    client.subscribe(GUARD_PREFIX_TOPIC + "miners/+");
 }
 
 void parseConfig(String &payload) {
@@ -111,7 +77,7 @@ void parseConfig(String &payload) {
     
     from = to = to + 1;
     
-    for (u32 i = 0; i < minersCount; ++i) {
+    for (i32 i = 0; i < minersCount; ++i) {
         while (payload[to] != ' ') 
             to++;
         name = payload.substring(from, to);
@@ -127,6 +93,14 @@ void parseConfig(String &payload) {
     isConfigSet = true;
 }
 
+i32 getMinerIndex(String& minerName) {
+    for (i32 i = 0; i < minersCount; ++i) {
+        if (miners[i].name == minerName)
+            return i;
+    }
+    return -1;
+}
+
 void startUpMessageReceiver(String &topic, String &payload) {
     Serial.println("incoming: " + topic + " = " + payload);
 
@@ -134,10 +108,41 @@ void startUpMessageReceiver(String &topic, String &payload) {
         parseConfig(payload);
     } else {
         Serial.println("ERROR: Undefined topic arrived!");
-        Serial.print("Topic: ");
-        Serial.println(topic);
-        Serial.print("Payload: ");
-        Serial.println(payload);
+        Serial.printf("Topic: %s\nPayload: %s\n", topic, payload);
+    }
+}
+
+void controlMessageReceiver(String &topic, String &payload) {
+    Serial.println("incoming: " + topic + " = " + payload);
+
+    if (topic.startsWith(GUARD_PREFIX_TOPIC)) {
+        String subtopic = topic.substring(GUARD_PREFIX_TOPIC.length());
+
+        if (subtopic.startsWith("miners/")) {
+            /* Received miner control message */
+            subtopic = subtopic.substring(7);
+
+            i32 id = getMinerIndex(subtopic);
+
+            if(id < 0) return;
+            Command command = getCommandFromName(payload);
+
+            if (command == Command::NotDefined) {
+                /* Undefined command received */
+            }
+            /* Miner should be in idle command mode */
+
+            miners[id].command = command;
+        }
+        else if (subtopic.startsWith("reset")) {
+            /* Restart guard */
+        }
+        else {
+            /* Undefined message */    
+        }
+    }
+    else {
+        /* Undefined message */
     }
 }
 
@@ -145,14 +150,15 @@ void printConfigSummary() {
     Serial.printf("Avaible miners under guard control: %d\n", minersCount);
     for (u32 i = 0; i < minersCount; ++i) {
         Serial.printf("Miner %d details:\n", i);
-        Serial.printf("\tName: %s\n", miners[i].name);
-        Serial.printf("\tPinouts:  power=%d, reset=%d, led=%d\n", 
+        Serial.printf("Name: %s\n", miners[i].name);
+        Serial.printf("Pinouts:  power=%d, reset=%d, led=%d\n", 
             miners[i].pinPower, miners[i].pinReset, miners[i].pinLed);
-        Serial.printf("\tState: %s\n", getStateName(miners[i].state));
+        Serial.printf("State: %s\n", getStateName(miners[i].state));
     }
 }
 
 void setup() {
+    TimerWrapper& timer = getTimerInstance();
     u64 timestamp = 0;
 
     Serial.begin(115200);
@@ -187,13 +193,12 @@ void setup() {
     applyConfig();
 
     /* Change message handler */
+    client.onMessage(controlMessageReceiver);
 
     /* Publish guard is configured */
     client.publish(GUARD_CONFIGURED_TOPIC, DEV_NAME);
 
     printConfigSummary();
-
-    while (1) delay(10000);
 }
 
 void loop() {
@@ -204,31 +209,26 @@ void loop() {
         connectMQTTClient();
     }
     
-    if (runPower) {
-        Serial.println("Power run has been requested");
-
-        digitalWrite(pinPower, LOW);
-        delay(1000);
-        digitalWrite(pinPower, HIGH);
-        
-        runPower = false;
-    } else if (runSoftReset) {
-        Serial.println("Soft reset run has been requested");
-        runSoftReset = false;
-    } else if (runHardReset) {
-        Serial.println("Hard reset run has been requested");
-        runHardReset = false;
-    } else if (ledRequested) {
-        Serial.println("LED state has been requested");
-        ledRequested = false;
+    /* Checking commands on each miner */
+    for (u32 i = 0; i < minersCount; ++i) {
+        if (miners[i].command > Command::Idle && !miners[i].isCommandRunning) {
+            /* Run command on miner  */
+            miners[i].runCommand();
+        }
     }
 
-    val = digitalRead(IN_PIN);
-    if (val == HIGH) {
-        Serial.println("In is HIGH");
-    } else {
-        Serial.println("In is LOW");
+    /* Checking execution timers */
+    for (u32 i = 0; i < minersCount; ++i) {
+        if (miners[i].command > Command::Idle && miners[i].isCommandRunning) {
+            /* Check command execution */
+            miners[i].watchCommandExecution();
+        }
     }
 
-    delay(100);
+    for (u32 i = 0; i < minersCount; ++i) {
+        miners[i].watchMinerState();
+    }
+
+    // Serial.println("HEY");
+    // delay(100);
 }

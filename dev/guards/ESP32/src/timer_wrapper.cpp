@@ -1,10 +1,6 @@
 #include "timer_wrapper.hpp"
 
 namespace {
-    static const timer_group_t TIMER_GROUP =  TIMER_GROUP_0;
-    static const timer_idx_t TIMER_INDEX = TIMER_0;
-    static const u32 TIMER_DIVIDER = 80;
-
     static TimerWrapper timer = getTimerInstance();
 }
 

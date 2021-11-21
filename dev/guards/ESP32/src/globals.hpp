@@ -1,5 +1,13 @@
-#ifndef DUPA_H
-#define DUPA_H
+#ifndef GLOBALS_H
+#define GLOBALS_H
+
+#include <Arduino.h>
+
+#include <WiFi.h>
+#include <MQTT.h>
+
+#include "driver/timer.h"
+#include "esp32-hal-cpu.h"
 
 #include "utils.hpp"
 
@@ -11,5 +19,23 @@ const u8 PINOUTS_SET [MAX_MINERS][3] = {
     {25, 26, 36},
     {32, 33, 39},
 };
+
+static const timer_group_t TIMER_GROUP =  TIMER_GROUP_0;
+static const timer_idx_t TIMER_INDEX = TIMER_0;
+static const u32 TIMER_DIVIDER = 80;
+
+const char WIFI_SSID[] = "NETIASPOT-2.4GHz-YC9V";
+const char WIFI_PASSWORD[] = "xXjgfYMt";
+
+const IPAddress IP_MQTT_BROKER(192, 168, 100, 5);
+const int PORT_MQTT_BROKER = 1883;
+const char DEV_NAME[] = "ESP32_Guard00";
+const char USER[] = "broker";
+const char PASSWORD[] = "broker";
+
+const String GUARD_STARTED_TOPIC = String("guards/started");
+const String GUARD_CONFIG_TOPIC = String("guards/config/") + DEV_NAME;
+const String GUARD_CONFIGURED_TOPIC = String("guards/configured");
+const String GUARD_PREFIX_TOPIC = String("guards/") + DEV_NAME + "/";
 
 #endif

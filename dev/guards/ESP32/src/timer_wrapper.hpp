@@ -1,9 +1,7 @@
 #ifndef TIMER_WRAPPER_H
 #define TIMER_WRAPPER_H
 
-#include "driver/timer.h"
-#include "esp32-hal-cpu.h"
-
+#include "globals.hpp"
 #include "utils.hpp"
 
 class TimerWrapper;
