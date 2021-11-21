@@ -4,10 +4,10 @@
 static const char * stateNames[] = {
     "NotDefined",
     "PoweredOff",
-    "HardStopped",
     "Starting",
     "Running",
-    "Stopping", 
+    "Stopping",
+    "HardStopping",
     "Restarting",
     "HardRestarting",
     "Aborted",
@@ -90,15 +90,35 @@ void Miner::runCommand() {
         }
     }
     break;
-    case Command::HardStop:
-    
-        break;
-    case Command::SoftReset:
-    
-        break;
-    case Command::HardReset:
-    
-        break;
+    case Command::HardStop: {
+        if (state == State::Running || state == State::Unreachable) {
+            timestamp = timer.getTimestamp();
+            digitalWrite(pinPower, LOW);
+            state = State::HardStopping;
+        } else {
+            client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+        }
+    }
+    break;
+    case Command::SoftReset: {
+        if (state == State::Running || state == State::Unreachable) {
+            timestamp = timer.getTimestamp();
+            digitalWrite(pinReset, LOW);
+            state = State::Restarting;
+        } else {
+            client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+        }
+    }
+    break;
+    case Command::HardReset: {
+        if (state == State::Running || state == State::Unreachable) {
+            timestamp = timer.getTimestamp();
+            digitalWrite(pinPower, LOW);
+            state = State::HardStopping;
+        } else {
+            client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+        }
+    }
     case Command::LedReport:
     
         break;
@@ -132,12 +152,10 @@ void Miner::watchCommandExecution() {
                 if (digitalRead(pinLed) == HIGH) {
                     /* Send command execution DONE */
                     client->publish(commandPrefixTopic + getCommandName(command), "DONE");
-                    
                     state = State::Running;
                 } else {
                     /* Send command execution FAILED */
                     client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
-                    
                     state = State::Unreachable;
                 }
                 command = Command::Idle;
@@ -152,35 +170,110 @@ void Miner::watchCommandExecution() {
                     timestamp = timer.getTimestamp();
                     ++commandStage;
                 }
-            } else if (digitalRead(pinLed) == LOW) {
-                /* Send command execution DONE */
-                client->publish(commandPrefixTopic + getCommandName(command), "DONE");
-                
+            } else if (commandStage == 1 && timer.isTimeElapsed(timestamp, 120000)) {
+                if (digitalRead(pinLed) == LOW) {
+                    /* Send command execution DONE */
+                    client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                    state = State::PoweredOff;
+                } else {
+                    /* Send command execution FAILED */
+                    client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                    state = State::Unreachable;
+                }
+
                 command = Command::Idle;
                 isCommandRunning = false;
-                state = State::PoweredOff;
-            } else if (timer.isTimeElapsed(timestamp, 120000)) {
-                /* Send command execution FAILED */
-                client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
-                
-                command = Command::Idle;
-                isCommandRunning = false;
-                state = State::Unreachable;
-            }
+            } 
         }
         break;
         case Command::HardStop: {
-        
+            if (commandStage == 0) {
+                if (timer.isTimeElapsed(timestamp, 5500)) {
+                    digitalWrite(pinPower, HIGH);
+                    timestamp = timer.getTimestamp();
+                    ++commandStage;
+                }
+            } else if (commandStage == 1) {
+                if (digitalRead(pinLed) == LOW) {
+                    /* Send command execution DONE */
+                    client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                    state = State::PoweredOff;
+                } else {
+                    /* Send command execution FAILED */
+                    client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                    state = State::Unreachable;
+                }
+                command = Command::Idle;
+                isCommandRunning = false;
+            }
         }
         break;
         case Command::SoftReset: {
-        
-            break;
+            if (commandStage == 0) {
+                if (timer.isTimeElapsed(timestamp, 1500)) {
+                    digitalWrite(pinReset, HIGH);
+                    timestamp = timer.getTimestamp();
+                    ++commandStage;
+                }
+            } else if (timer.isTimeElapsed(timestamp, 5000)) {
+                if (digitalRead(pinLed) == HIGH) {
+                    /* Send command execution DONE */
+                    client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                    state = State::Running;
+                } else {
+                    /* Send command execution FAILED */
+                    client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                    state = State::Aborted;
+                }
+                command = Command::Idle;
+                isCommandRunning = false;
+            }
         }
+        break;
         case Command::HardReset: {
-        
-            break;
+            if (commandStage == 0) {
+                if (timer.isTimeElapsed(timestamp, 5500)) {
+                    digitalWrite(pinPower, HIGH);
+                    timestamp = timer.getTimestamp();
+                    ++commandStage;
+                }
+            } else if (commandStage == 1) {
+                if (timer.isTimeElapsed(timestamp, 1000)) {
+                    if (digitalRead(pinLed) == LOW) {
+                        digitalWrite(pinPower, LOW);
+                        timestamp = timer.getTimestamp();
+                        ++commandStage;
+                    } else {
+                        /* Send command execution FAILED */
+                        client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                        state = State::Unreachable;
+                        command = Command::Idle;
+                        isCommandRunning = false;
+                    }
+                }
+            } else if (commandStage == 2) {
+                if (timer.isTimeElapsed(timestamp, 1500)) {
+                    digitalWrite(pinPower, HIGH);
+                    timestamp = timer.getTimestamp();
+                    ++commandStage;
+                }
+            } else if (commandStage == 3) {
+                if (timer.isTimeElapsed(timestamp, 5000)) {
+                    if (digitalRead(pinLed) == HIGH) {
+                        /* Send command execution DONE */
+                        client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                        state = State::Running;
+                    } else {
+                        /* Send command execution FAILED */
+                        client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                        state = State::Aborted;
+                    }
+                    command = Command::Idle;
+                    isCommandRunning = false;
+                }
+            }
         }
+        break;
         case Command::LedReport: {
             int ledState = digitalRead(pinLed);
             if (ledState == HIGH) {
@@ -209,8 +302,7 @@ void Miner::watchMinerState() {
     case State::NotDefined:
     
         break;
-    case State::PoweredOff:
-    case State::HardStopped: {
+    case State::PoweredOff: {
         if (digitalRead(pinLed) == HIGH) {
             state = State::Unreachable;
 
@@ -234,7 +326,11 @@ void Miner::watchMinerState() {
     case State::Stopping: {
         
     }
-        break;
+    break;
+    case State::HardStopping: {
+        
+    }
+    break;
     case State::Restarting:
     
         break;

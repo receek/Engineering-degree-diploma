@@ -37,5 +37,6 @@ const String GUARD_STARTED_TOPIC = String("guards/started");
 const String GUARD_CONFIG_TOPIC = String("guards/config/") + DEV_NAME;
 const String GUARD_CONFIGURED_TOPIC = String("guards/configured");
 const String GUARD_PREFIX_TOPIC = String("guards/") + DEV_NAME + "/";
+const String GUARD_ERROR_LOG_TOPIC = String("guards/") + DEV_NAME + "/error";
 
 #endif

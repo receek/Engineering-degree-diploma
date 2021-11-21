@@ -15,7 +15,8 @@ static MQTTClient client;
 static Miner miners[MAX_MINERS];
 static i32 minersCount = -1;
 
-bool isConfigSet = false; 
+bool isConfigSet = false;
+bool runRestart = false;
 
 void connectMQTTClient() {
     Serial.println("MQTT Client connecting...");
@@ -54,8 +55,9 @@ void applyConfig() {
 
     Miner::client = &client;
 
-    /* Subscribe miner control topic */
+    /* Subscribe miner control topics */
     client.subscribe(GUARD_PREFIX_TOPIC + "miners/+");
+    client.subscribe(GUARD_PREFIX_TOPIC + "reset");
 }
 
 void parseConfig(String &payload) {
@@ -129,16 +131,23 @@ void controlMessageReceiver(String &topic, String &payload) {
 
             if (command == Command::NotDefined) {
                 /* Undefined command received */
+                client.publish(topic, "FAILED: Undefined command");
+                return;
+            } else if (miners[id].command != Command::Idle) {
+                /* Miner should be in idle command mode */
+                client.publish(topic, "FAILED: Miner is busy");
+                return;
             }
-            /* Miner should be in idle command mode */
 
             miners[id].command = command;
         }
         else if (subtopic.startsWith("reset")) {
             /* Restart guard */
+            runRestart = true;
         }
         else {
-            /* Undefined message */    
+            /* Undefined topic */
+            client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
         }
     }
     else {
@@ -155,6 +164,16 @@ void printConfigSummary() {
             miners[i].pinPower, miners[i].pinReset, miners[i].pinLed);
         Serial.printf("State: %s\n", getStateName(miners[i].state));
     }
+}
+
+void runGuardRestart() {
+    client.publish(GUARD_PREFIX_TOPIC + "reset", "RESTARTING");
+
+    Serial.println("Guard runs restart!");
+    Serial.flush();
+
+    delay(100);
+    ESP.restart();
 }
 
 void setup() {
@@ -205,6 +224,10 @@ void loop() {
     client.loop();
     delay(10);
 
+    if (runRestart) {
+        runGuardRestart();
+    }
+
     if (!client.connected()) {
         connectMQTTClient();
     }
@@ -228,6 +251,7 @@ void loop() {
     for (u32 i = 0; i < minersCount; ++i) {
         miners[i].watchMinerState();
     }
+
 
     // Serial.println("HEY");
     // delay(100);

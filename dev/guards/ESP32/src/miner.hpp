@@ -10,10 +10,10 @@
 enum class State {
     NotDefined = 0,
     PoweredOff,
-    HardStopped,
     Starting,
     Running,
-    Stopping, 
+    Stopping,
+    HardStopping, 
     Restarting,
     HardRestarting,
     Aborted,
@@ -41,7 +41,7 @@ private:
 public:
     static TimerWrapper& timer;
     static MQTTClient * client;
-    
+
     u8 pinPower;
     u8 pinReset;
     u8 pinLed;
