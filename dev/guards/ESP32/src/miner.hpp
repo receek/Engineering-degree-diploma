@@ -28,18 +28,25 @@ enum class Command {
     PowerOn,
     PowerOff,
     HardStop,
-    SoftReset,
+    Reset,
     HardReset,
     LedReport
 };
 
+const char * getCommandName(Command);
 Command getCommandFromName(String&);
 
 class Miner {
 private:
+    static TimerWrapper& timer;
+
+    u64 timestamp;
+    u32 commandStage = 0;
+
+    String commandPrefixTopic;
+    String errorLogTopic;
 
 public:
-    static TimerWrapper& timer;
     static MQTTClient * client;
 
     u8 pinPower;
@@ -47,15 +54,11 @@ public:
     u8 pinLed;
 
     String name;
-    String commandPrefixTopic;
-    String errorLogTopic;
-    
+
     State state;
     
     Command command;
     bool isCommandRunning;
-    u64 timestamp;
-    u32 commandStage = 0;
 
     void setConfiguration(u8, String&);
     void runCommand();

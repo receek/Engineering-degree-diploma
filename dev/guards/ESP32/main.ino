@@ -12,8 +12,12 @@
 static WiFiClient network;
 static MQTTClient client;
 
+
 static Miner miners[MAX_MINERS];
 static i32 minersCount = -1;
+
+TimerWrapper& timer = getTimerInstance();
+u64 timestamp = 0;
 
 bool isConfigSet = false;
 bool runRestart = false;
@@ -126,7 +130,11 @@ void controlMessageReceiver(String &topic, String &payload) {
 
             i32 id = getMinerIndex(subtopic);
 
-            if(id < 0) return;
+            if(id < 0) {
+                client.publish(topic, "FAILED: Undefined miner name");
+                return;
+            }
+
             Command command = getCommandFromName(payload);
 
             if (command == Command::NotDefined) {
@@ -148,10 +156,14 @@ void controlMessageReceiver(String &topic, String &payload) {
         else {
             /* Undefined topic */
             client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
+            Serial.printf("Guard received message from unspecified topic: %s\n", topic);
+            Serial.flush();
         }
     }
     else {
         /* Undefined message */
+        Serial.printf("Guard received message from unspecified topic: %s\n", topic);
+        Serial.flush();
     }
 }
 
@@ -163,6 +175,7 @@ void printConfigSummary() {
         Serial.printf("Pinouts:  power=%d, reset=%d, led=%d\n", 
             miners[i].pinPower, miners[i].pinReset, miners[i].pinLed);
         Serial.printf("State: %s\n", getStateName(miners[i].state));
+        Serial.flush();
     }
 }
 
@@ -177,9 +190,6 @@ void runGuardRestart() {
 }
 
 void setup() {
-    TimerWrapper& timer = getTimerInstance();
-    u64 timestamp = 0;
-
     Serial.begin(115200);
 
     /* WiFi configuring */
@@ -218,6 +228,7 @@ void setup() {
     client.publish(GUARD_CONFIGURED_TOPIC, DEV_NAME);
 
     printConfigSummary();
+    timestamp = timer.getTimestamp();
 }
 
 void loop() {
@@ -248,11 +259,11 @@ void loop() {
         }
     }
 
-    for (u32 i = 0; i < minersCount; ++i) {
-        miners[i].watchMinerState();
+    if (timer.isTimeElapsed(timestamp, 500)) {
+        for (u32 i = 0; i < minersCount; ++i) {
+            miners[i].watchMinerState();
+        }
+
+        timestamp = timer.getTimestamp();
     }
-
-
-    // Serial.println("HEY");
-    // delay(100);
 }
