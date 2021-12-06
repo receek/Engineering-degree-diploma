@@ -1,0 +1,14 @@
+[package]
+name = "mithra"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = "2.34.0"
+configparser = "3.0.0"
+postgres = "0.19.2"
+r2d2 = "0.8.9"
+r2d2_postgres = "0.18.1"
+rumqttc = "0.9.0"
