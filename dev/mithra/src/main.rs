@@ -3,7 +3,14 @@ use configparser::ini::Ini;
 use hostname_validator;
 use postgres::Config;
 use rumqttc::MqttOptions;
+use std::{collections::{HashSet, HashMap}, hash::Hash, str::FromStr};
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
+use yaml_rust::{Yaml, YamlEmitter, YamlLoader};
+
+mod system;
+use system::*;
 
 fn main() {
     let params = get_cli_parameters().unwrap_or_else(
@@ -28,6 +35,13 @@ fn main() {
         std::process::exit(1);
     });
 
+    let system_config = load_yaml_config(config_file).unwrap_or_else(|error_msg| {
+        eprintln!("{}", error_msg);
+        std::process::exit(1);
+    });
+
+    println!("{:?}", system_config);
+    
 
 }
 
@@ -154,3 +168,152 @@ fn get_mqtt_config(params: &Ini) -> Result<MqttOptions, &str> {
 
     return Ok(mqtt_options);
 } 
+
+
+fn load_yaml_config(path: &str) -> Result<System, &str> {
+    let content = if let Ok(mut file) = File::open(path) {
+        let mut content = String::new();
+        if let Ok(_) = file.read_to_string(&mut content) {
+            content
+        } else {
+            return Err("Reading file error!");
+        }
+    } else {
+        return Err("Cannot open yaml configuration file!");
+    };
+
+    let docs = if let Ok(docs) = YamlLoader::load_from_str(&content) {
+        docs
+    } else {
+        return Err("Parsing yaml error!")
+    };
+
+    let doc = &docs[0];
+
+    if let Some(system) = parse_yaml(doc) {
+        Ok(system)
+    } else {
+        Err("Not valid yaml configuration!")
+    }
+}
+
+fn parse_yaml(conf: &Yaml) -> Option<System> {
+    /* Checking switchboard */
+    if let Yaml::BadValue = conf["switchboard"] {
+        return None;
+    }
+
+    if let Yaml::BadValue = conf["switchboard"]["name"] {
+        return None;
+    }
+
+    /* Checking each guard */
+    if let Yaml::BadValue = conf["guards"] {
+        return None;
+    } 
+
+    /* Checking guards */
+    let guards = if let Some(array) = conf["guards"].as_vec() {
+        array
+    } else {
+        return None
+    };
+
+    let mut system = System {
+        guards: HashMap::new(),
+        miners: HashMap::new(),
+    };
+
+    let mut guard_names = HashSet::new();
+    let mut plug_names = HashSet::new();
+    let mut miner_names = HashSet::new();
+
+    for guard in guards {
+        let guard_name = if let Some(guard_name) = guard["name"].as_str() {
+            /* Guards name are uniqe */
+            if guard_names.contains(guard_name) {
+                return None;
+            }
+            guard_names.insert(guard_name);
+            guard_name
+        } else {
+            return None;
+        };
+
+        /* Check guard type is supported */
+        let guard_type = if let Some(board_name) = guard["type"].as_str() {
+            if let Ok(guard_type) = GuardType::from_str(board_name) {
+                guard_type
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+
+        let pinout_limit = guard_type.get_pinout_limit();
+
+        let miners = if let Some(array) = guard["miners"].as_vec() {
+            array
+        } else {
+            return None;
+        };
+
+        let mut local_guard = Guard {
+            name: String::from(guard_name),
+            miners: Vec::new(),
+            board_type: guard_type,
+        };
+        /* Check all miners under this guard */
+        for miner in miners {
+            let mut pinouts = HashSet::new();
+            
+            let miner_name = if let Some(miner_name) = miner["name"].as_str() {
+                /* Miner names are uniqe */
+                if miner_names.contains(miner_name) {
+                    return None;
+                }
+                miner_names.insert(miner_name);
+                miner_name
+            } else {
+                return None;
+            };
+
+            let miner_pinout = if let Some(pinout) = miner["pinout"].as_i64() {
+                if pinouts.contains(&pinout) || pinout < 0 || pinout as u32 >= pinout_limit {
+                    return None;
+                }
+                pinouts.insert(pinout);
+                pinout
+            } else {
+                return None;
+            };
+
+            let plug_name = if let Some(plug_name) = miner["plug"].as_str() {
+                if plug_names.contains(plug_name) {
+                    return None;
+                }
+                plug_names.insert(plug_name);
+                plug_name
+            } else {
+                return None;
+            };
+
+            local_guard.miners.push(String::from(miner_name));
+            system.miners.insert(
+                String::from(miner_name),
+                Miner {
+                    name: String::from(miner_name),
+                    guard: String::from(guard_name),
+                    plug: String::from(plug_name),
+                    pinout: miner_pinout as u32,
+                    power_consumption: None,
+                }    
+            );
+        }
+
+        system.guards.insert(String::from(guard_name), local_guard);
+    }
+
+    Some(system)
+}
