@@ -1,16 +1,20 @@
 use clap::{Arg, ArgMatches, App, Error};
 use configparser::ini::Ini;
 use hostname_validator;
-use postgres::Config;
-use rumqttc::MqttOptions;
-use std::{collections::{HashSet, HashMap}, hash::Hash, str::FromStr};
+use postgres::{Config, NoTls};
+use r2d2::ManageConnection;
+use rumqttc::{Client, MqttOptions};
+use std::{collections::{HashSet, HashMap}, str::FromStr};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use yaml_rust::{Yaml, YamlEmitter, YamlLoader};
+use yaml_rust::{Yaml, YamlLoader};
 
 mod system;
 use system::*;
+
+// mod database;
+// use database::*;
 
 fn main() {
     let params = get_cli_parameters().unwrap_or_else(
@@ -35,14 +39,51 @@ fn main() {
         std::process::exit(1);
     });
 
-    let system_config = load_yaml_config(config_file).unwrap_or_else(|error_msg| {
+    let mut system_config = load_yaml_config(config_file).unwrap_or_else(|error_msg| {
         eprintln!("{}", error_msg);
         std::process::exit(1);
     });
 
-    println!("{:?}", system_config);
+    // println!("{:?}", system_config);
+    
+    /* Config is validated and loaded */
+
+    /* Try to connect with database */
+    match db_config.connect(NoTls) {
+        Ok(conn) => {
+            if let Err(error) = conn.close() {
+                eprintln!("Database closing test connection: {}", error.to_string());
+                std::process::exit(1)    
+            }
+        },
+        Err(error) => {
+            eprintln!("Database test connection: {}", error.to_string());
+            std::process::exit(1)
+        },
+    }
+
+    /* Try to connect with MQTT server */
+    let (mut client, mut connection) = Client::new(mqtt_config, 1);
+    let msg = connection.iter().next();
+    if let Some(Err(error)) = msg {
+        eprintln!("MQTT server test connection: {}", error.to_string());
+        std::process::exit(1);
+    }
+    
+    if let Err(error ) = client.disconnect() {
+        eprintln!("MQTT server closing test connection: {}", error.to_string());
+        std::process::exit(1);
+    }
+
+    /* Start system */
+
     
 
+    /* Run MQTT switchboard and plugs messages handler */
+
+    /* Run MQTT miners command handler and executor */
+
+    /* Run power consumption analyzer */
 }
 
 fn get_cli_parameters() -> Result<ArgMatches<'static>, Error> {
@@ -203,9 +244,10 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
         return None;
     }
 
-    if let Yaml::BadValue = conf["switchboard"]["name"] {
+    if let Yaml::BadValue = conf["switchboard"]["id"] {
         return None;
     }
+    let switchboard_id = conf["switchboard"]["id"].as_str().unwrap();
 
     /* Checking each guard */
     if let Yaml::BadValue = conf["guards"] {
@@ -220,29 +262,34 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
     };
 
     let mut system = System {
+        switchboard: Switchboard {
+            id: String::from(switchboard_id),
+            state: DeviceState::Unknown,
+        },
         guards: HashMap::new(),
         miners: HashMap::new(),
+        plugs: HashMap::new(),
     };
 
-    let mut guard_names = HashSet::new();
-    let mut plug_names = HashSet::new();
-    let mut miner_names = HashSet::new();
+    let mut guard_ids = HashSet::new();
+    let mut plug_ids = HashSet::new();
+    let mut miner_ids = HashSet::new();
 
     for guard in guards {
-        let guard_name = if let Some(guard_name) = guard["name"].as_str() {
-            /* Guards name are uniqe */
-            if guard_names.contains(guard_name) {
+        let guard_id = if let Some(guard_id) = guard["id"].as_str() {
+            /* Guards id are uniqe */
+            if guard_ids.contains(guard_id) {
                 return None;
             }
-            guard_names.insert(guard_name);
-            guard_name
+            guard_ids.insert(guard_id);
+            guard_id
         } else {
             return None;
         };
 
         /* Check guard type is supported */
-        let guard_type = if let Some(board_name) = guard["type"].as_str() {
-            if let Ok(guard_type) = GuardType::from_str(board_name) {
+        let guard_type = if let Some(board_id) = guard["type"].as_str() {
+            if let Ok(guard_type) = GuardType::from_str(board_id) {
                 guard_type
             } else {
                 return None;
@@ -260,21 +307,22 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
         };
 
         let mut local_guard = Guard {
-            name: String::from(guard_name),
+            id: String::from(guard_id),
             miners: Vec::new(),
             board_type: guard_type,
+            state: DeviceState::Available,
         };
         /* Check all miners under this guard */
         for miner in miners {
             let mut pinouts = HashSet::new();
             
-            let miner_name = if let Some(miner_name) = miner["name"].as_str() {
-                /* Miner names are uniqe */
-                if miner_names.contains(miner_name) {
+            let miner_id = if let Some(miner_id) = miner["id"].as_str() {
+                /* Miner ids are uniqe */
+                if miner_ids.contains(miner_id) {
                     return None;
                 }
-                miner_names.insert(miner_name);
-                miner_name
+                miner_ids.insert(miner_id);
+                miner_id
             } else {
                 return None;
             };
@@ -289,30 +337,37 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
                 return None;
             };
 
-            let plug_name = if let Some(plug_name) = miner["plug"].as_str() {
-                if plug_names.contains(plug_name) {
+            let plug_id = if let Some(plug_id) = miner["plug"].as_str() {
+                if plug_ids.contains(plug_id) {
                     return None;
                 }
-                plug_names.insert(plug_name);
-                plug_name
+                plug_ids.insert(plug_id);
+                plug_id
             } else {
                 return None;
             };
 
-            local_guard.miners.push(String::from(miner_name));
+            local_guard.miners.push(String::from(miner_id));
             system.miners.insert(
-                String::from(miner_name),
+                String::from(miner_id),
                 Miner {
-                    name: String::from(miner_name),
-                    guard: String::from(guard_name),
-                    plug: String::from(plug_name),
+                    id: String::from(miner_id),
+                    guard: String::from(guard_id),
+                    plug: String::from(plug_id),
                     pinout: miner_pinout as u32,
                     power_consumption: None,
                 }    
             );
+            system.plugs.insert(
+                String::from(plug_id),
+                Plug {
+                    id: String::from(plug_id),
+                    state: DeviceState::Unknown,
+                }
+            );
         }
 
-        system.guards.insert(String::from(guard_name), local_guard);
+        system.guards.insert(String::from(guard_id), local_guard);
     }
 
     Some(system)
