@@ -44,14 +44,15 @@ Command getCommandFromName(String& state) {
 TimerWrapper& Miner::timer = getTimerInstance();
 MQTTClient *Miner::client = 0;
 
-void Miner::setConfiguration(u8 pinSet, String & name_) {
+void Miner::setConfiguration(u8 pinSet_, String & id_) {
+    pinSet = pinSet_;
     pinPower = PINOUTS_SET[pinSet][0];
     pinReset = PINOUTS_SET[pinSet][1];
     pinLed = PINOUTS_SET[pinSet][2];
 
-    name = name_;
-    commandPrefixTopic = GUARD_PREFIX_TOPIC + "miners/" + name + "/";
-    errorLogTopic = GUARD_PREFIX_TOPIC + "miners/" + name + "/error";
+    id = id_;
+    commandPrefixTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/";
+    errorLogTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/error";
 
     state = State::NotDefined;
     command = Command::Idle;
@@ -134,7 +135,7 @@ void Miner::runCommand() {
         default:
             Serial.printf(
                 "Miner %s received to run undefined command %d in runCommand function!\n",
-                name, static_cast<u32>(command)
+                id, static_cast<u32>(command)
             );
             Serial.flush();
             return;
@@ -305,7 +306,7 @@ void Miner::watchCommandExecution() {
         default: {
             Serial.printf(
                 "Miner %s is watching not allowed command (code = %d) in watchCommandExecution function!\n",
-                name, static_cast<u32>(command)
+                id, static_cast<u32>(command)
             );
             Serial.flush();
             command = Command::Idle;
@@ -360,7 +361,7 @@ void Miner::watchMinerState() {
         case State::Unreachable: {
             Serial.printf(
                 "Miner %s has state %d in watchMinerState function!\n",
-                name, static_cast<u32>(state)
+                id, static_cast<u32>(state)
             );
             Serial.flush();
         }
@@ -370,7 +371,7 @@ void Miner::watchMinerState() {
         default: {
             Serial.printf(
                 "Miner %s has undefined state %d in watchMinerState function!\n",
-                name, static_cast<u32>(state)
+                id, static_cast<u32>(state)
             );
             Serial.flush();
         }

@@ -21,6 +21,7 @@ u64 timestamp = 0;
 
 bool isConfigSet = false;
 bool runRestart = false;
+bool runAnnounce = false;
 
 void connectMQTTClient() {
     Serial.println("MQTT Client connecting...");
@@ -32,7 +33,7 @@ void connectMQTTClient() {
 
     Serial.println("WiFi connected!");
 
-    while (!client.connect(DEV_NAME, USER, PASSWORD)) {
+    while (!client.connect(DEV_ID, USER, PASSWORD)) {
         delay(1000);
     }
 
@@ -61,7 +62,8 @@ void applyConfig() {
 
     /* Subscribe miner control topics */
     client.subscribe(GUARD_PREFIX_TOPIC + "miners/+");
-    client.subscribe(GUARD_PREFIX_TOPIC + "reset");
+    client.subscribe(GUARD_PREFIX_TOPIC + "command");
+    client.subscribe(GUARD_COMMAND_TOPIC);
 }
 
 void parseConfig(String &payload) {
@@ -101,7 +103,7 @@ void parseConfig(String &payload) {
 
 i32 getMinerIndex(String& minerName) {
     for (i32 i = 0; i < minersCount; ++i) {
-        if (miners[i].name == minerName)
+        if (miners[i].id == minerName)
             return i;
     }
     return -1;
@@ -149,7 +151,7 @@ void controlMessageReceiver(String &topic, String &payload) {
 
             miners[id].command = command;
         }
-        else if (subtopic.startsWith("reset")) {
+        else if (subtopic.startsWith("command") && payload.startsWith("reset")) {
             /* Restart guard */
             runRestart = true;
         }
@@ -158,6 +160,12 @@ void controlMessageReceiver(String &topic, String &payload) {
             client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
             Serial.printf("Guard received message from unspecified topic: %s\n", topic);
             Serial.flush();
+        }
+    } else if (topic.startsWith(GUARD_COMMAND_TOPIC)) {
+        if (payload.startsWith("announce")) {
+            runAnnounce = true;
+        } else if (payload.startsWith("reset")) {
+            runRestart = true;
         }
     }
     else {
@@ -171,7 +179,7 @@ void printConfigSummary() {
     Serial.printf("Avaible miners under guard control: %d\n", minersCount);
     for (u32 i = 0; i < minersCount; ++i) {
         Serial.printf("Miner %d details:\n", i);
-        Serial.printf("Name: %s\n", miners[i].name);
+        Serial.printf("Name: %s\n", miners[i].id);
         Serial.printf("Pinouts:  power=%d, reset=%d, led=%d\n", 
             miners[i].pinPower, miners[i].pinReset, miners[i].pinLed);
         Serial.printf("State: %s\n", getStateName(miners[i].state));
@@ -189,6 +197,32 @@ void runGuardRestart() {
     ESP.restart();
 }
 
+void runGuardAnnounce() {
+    char buffer[256];
+    char miner[128];
+    String minersBuffer;
+
+    minersBuffer += "[";
+    for(int i = 0; i < minersCount; i++) {
+        sprintf(miner, "{\"id\": \"%s\" , \"pinset\": %d}", miners[i].id, miners[i].pinSet);
+        minersBuffer += miner;
+        if (i < minersCount - 1) {
+            minersBuffer += ',';
+        }
+    }
+    minersBuffer += "]";
+
+    sprintf(buffer, 
+        "{\"id\": \"%s\", \"type\": \"%s\", \"miners\": %s}", 
+        DEV_ID, DEV_TYPE, minersBuffer.c_str()
+    );
+
+    Serial.println("Guard publishs announce message!");
+    Serial.flush();
+
+    client.publish(GUARD_ANNOUNCE_TOPIC, buffer);
+}
+
 void setup() {
     Serial.begin(115200);
 
@@ -201,14 +235,14 @@ void setup() {
     connectMQTTClient();
 
     client.subscribe(GUARD_CONFIG_TOPIC);
-    client.publish(GUARD_STARTED_TOPIC, DEV_NAME);
+    client.publish(GUARD_STARTED_TOPIC, DEV_ID);
     timestamp = timer.getTimestamp();
 
     /* Waiting for ports configset message */
     while (!isConfigSet) {
         if (timer.isTimeElapsed(timestamp, 10000)){
             /* Republishing config request */
-            client.publish(GUARD_STARTED_TOPIC, DEV_NAME);
+            client.publish(GUARD_STARTED_TOPIC, DEV_ID);
             timestamp = timer.getTimestamp();
         }
 
@@ -225,7 +259,7 @@ void setup() {
     client.onMessage(controlMessageReceiver);
 
     /* Publish guard is configured */
-    client.publish(GUARD_CONFIGURED_TOPIC, DEV_NAME);
+    client.publish(GUARD_CONFIGURED_TOPIC, DEV_ID);
 
     printConfigSummary();
     timestamp = timer.getTimestamp();
@@ -235,14 +269,19 @@ void loop() {
     client.loop();
     delay(10);
 
-    if (runRestart) {
-        runGuardRestart();
-    }
-
     if (!client.connected()) {
         connectMQTTClient();
     }
     
+    if (runRestart) {
+        runGuardRestart();
+    }
+
+    if (runAnnounce) {
+        runAnnounce = false;
+        runGuardAnnounce();
+    }
+
     /* Checking commands on each miner */
     for (u32 i = 0; i < minersCount; ++i) {
         if (miners[i].command > Command::Idle && !miners[i].isCommandRunning) {
