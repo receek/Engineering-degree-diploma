@@ -5,10 +5,10 @@ Pinout possibilities summary:
 We assume 4 miners to serve for now:
 Input only pins {34,35,36,39} we will use as LED input
 Available power/reset/LED sets:
-* 21/22/34 - pins set index 0
-* 23/24/35 - pins set index 1
-* 25/26/36 - pins set index 2
-* 32/33/39 - pins set index 3
+* 25/26/36 - pins set index 0
+* 16/17/39 - pins set index 1
+* 19/21/34 - pins set index 2
+* 23/22/35 - pins set index 3
 
 ## Initialization of a device:
 Steps:
@@ -52,11 +52,11 @@ Steps:
 
 ### Commands description:
 - `NotDefined` - Any of below.
-- `Idle` - Miner wait for commnd potentially. 
-- `PowerOn` - Miner is starting.
-- `PowerOff` - Miner is powered down.
-- `HardStop` - Miner is powered down by pin power (5 sec.).
-- `Reset` - Restarting miner.
-- `HardReset` - Resterting miner by pin power (5 sec.)
-- `LedReport` - Report to server state of pin LED .
+- `Idle` - Miner waits for commnd potentially. 
+- `PowerOn` - Power up miner.
+- `PowerOff` - Power down miner.
+- `HardStop` - Power down miner by pin power (5 sec.).
+- `Reset` - Restart miner with pin reset.
+- `HardReset` - Restert miner by pin power (5 sec.)
+- `LedReport` - Report to server state of pin LED.
 

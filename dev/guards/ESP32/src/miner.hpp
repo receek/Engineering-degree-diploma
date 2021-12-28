@@ -49,11 +49,12 @@ private:
 public:
     static MQTTClient * client;
 
+    u8 pinSet;
     u8 pinPower;
     u8 pinReset;
     u8 pinLed;
 
-    String name;
+    String id;
 
     State state;
     
