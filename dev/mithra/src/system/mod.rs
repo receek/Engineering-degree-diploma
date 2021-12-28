@@ -41,7 +41,7 @@ pub enum GuardType {
 }
 
 impl GuardType {
-    pub fn get_pinout_limit(&self) -> u32 {
+    pub fn get_pinset_limit(&self) -> u32 {
         match self {
             GuardType::ESP32 => 4
         }
@@ -70,7 +70,7 @@ pub struct Miner {
     pub id: String,
     pub plug: String,
     pub guard: String,
-    pub pinout: u32,
+    pub pinset: u32,
     pub power_consumption: Option<u32>, // Watts
 }
 
@@ -98,10 +98,12 @@ pub struct System {
 }
 
 impl System {
-    pub fn init(&mut self, mqtt_config: &MqttOptions) {
-        let (mut client, mut connection) = Client::new(mqtt_config.clone(), 1);
-        client.subscribe("shellies/announce", QoS::AtMostOnce);
-        //client.subscribe("guards/announce", QoS::AtMostOnce);
+    pub fn init(&mut self, mut mqtt_config: MqttOptions) {
+        println!("Enter init");
+        mqtt_config.set_keep_alive(5);
+        let (mut client, mut connection) = Client::new(mqtt_config.clone(), 10);
+        client.subscribe("shellies/announce", QoS::AtMostOnce).unwrap();
+        client.subscribe("guards/announce", QoS::AtMostOnce).unwrap();
 
         if let Err(error_msg) = client.publish(
             "shellies/command",
@@ -113,12 +115,23 @@ impl System {
             std::process::exit(1);
         }
 
-        let timer = Instant::now();
-        let time = Duration::from_secs(30);
+        if let Err(error_msg) = client.publish(
+            "guards/command",
+            QoS::AtMostOnce,
+            false,
+            "announce".as_bytes()
+        ) {
+            eprintln!("Guards annouce command error: {}", error_msg);
+            std::process::exit(1);
+        }
 
+        let timer = Instant::now();
+        let time = Duration::from_secs(5);
+        println!("Commands sent");
         for msg in connection.iter() {
             if timer.elapsed() > time {
-                client.disconnect();
+                client.disconnect().unwrap();
+                println!("HERE");
                 break;
             }
 
@@ -143,8 +156,8 @@ impl System {
         ).unwrap();
 
         if data.topic == "shellies/announce" {
-            let dev_type =  ShellyType::from_str(device["model"].as_str().unwrap());
             let id = device["id"].as_str().unwrap();
+            let dev_type =  ShellyType::from_str(device["model"].as_str().unwrap());
             match dev_type {
                 Ok(ShellyType::SHEM_3) => {
                     /* It is switchboard */
@@ -166,25 +179,45 @@ impl System {
                 Err(_) => {}
             }
         } else if data.topic == "guards/announce" {
-            let dev_type =  GuardType::from_str(device["model"].as_str().unwrap());
-            let id = device["id"].as_str().unwrap();
-            match dev_type {
-                Ok(GuardType::ESP32) => {
-                    /* It is plug */
-                    if let Some(guard) = self.guards.get_mut(id) {
-                        guard.state = DeviceState::Available;
-                    }
-                    else {
-                        return;
-                    }
-                },
-                Err(_) => {}
+            let guard_id = device["id"].as_str().unwrap();
+            let dev_type = match GuardType::from_str(device["type"].as_str().unwrap()) {
+                Ok(t) => t,
+                Err(error_msg ) => {
+                    eprintln!("{}", error_msg);
+                    std::process::exit(1);
+                }
+            };
+
+            if let Some(guard) = self.guards.get_mut(guard_id) {
+                guard.state = DeviceState::Available;
+                if (guard.board_type != dev_type) {
+                    eprintln!("Guard {} has different board type than in config file", guard_id);
+                    std::process::exit(1);
+                } 
+            }
+            else {
+                /* Guard is not defined in config file */
+                return;
             }
 
             if let JsonValue::Array(miners) = &device["miners"] {
-
+                for miner in miners {
+                    let miner_id = miner["id"].as_str().unwrap();
+                    let pinset = miner["pinset"].as_u32().unwrap();
+                    if let Some(miner) = self.miners.get_mut(miner_id) {
+                        if miner.id != miner_id || miner.pinset != pinset {
+                            eprintln!("Miner {} has different configuration", miner_id);
+                            std::process::exit(1);
+                        }
+                    } else {
+                        /* Miner is not defined in config file */
+                        eprintln!("Miner {} is not configured in config file", miner_id);
+                        std::process::exit(1);
+                    }
+                }
             } else {
-                /* TODO: check how libn parse jsons */
+                eprintln!("Guard {} sent improper json format", guard_id);
+                std::process::exit(1);
             }
         } else {
             /* Got msg from unimplemented device */

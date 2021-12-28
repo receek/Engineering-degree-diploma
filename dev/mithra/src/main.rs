@@ -2,7 +2,7 @@ use clap::{Arg, ArgMatches, App, Error};
 use configparser::ini::Ini;
 use hostname_validator;
 use postgres::{Config, NoTls};
-use r2d2::ManageConnection;
+//use r2d2::ManageConnection;
 use rumqttc::{Client, MqttOptions};
 use std::{collections::{HashSet, HashMap}, str::FromStr};
 use std::fs::File;
@@ -63,7 +63,7 @@ fn main() {
     }
 
     /* Try to connect with MQTT server */
-    let (mut client, mut connection) = Client::new(mqtt_config, 1);
+    let (mut client, mut connection) = Client::new(mqtt_config.clone(), 1);
     let msg = connection.iter().next();
     if let Some(Err(error)) = msg {
         eprintln!("MQTT server test connection: {}", error.to_string());
@@ -76,8 +76,7 @@ fn main() {
     }
 
     /* Start system */
-
-    
+    system_config.init(mqtt_config.clone());
 
     /* Run MQTT switchboard and plugs messages handler */
 
@@ -298,7 +297,7 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
             return None;
         };
 
-        let pinout_limit = guard_type.get_pinout_limit();
+        let pinset_limit = guard_type.get_pinset_limit();
 
         let miners = if let Some(array) = guard["miners"].as_vec() {
             array
@@ -314,7 +313,7 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
         };
         /* Check all miners under this guard */
         for miner in miners {
-            let mut pinouts = HashSet::new();
+            let mut pinsets = HashSet::new();
             
             let miner_id = if let Some(miner_id) = miner["id"].as_str() {
                 /* Miner ids are uniqe */
@@ -327,12 +326,12 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
                 return None;
             };
 
-            let miner_pinout = if let Some(pinout) = miner["pinout"].as_i64() {
-                if pinouts.contains(&pinout) || pinout < 0 || pinout as u32 >= pinout_limit {
+            let miner_pinset = if let Some(pinset) = miner["pinset"].as_i64() {
+                if pinsets.contains(&pinset) || pinset < 0 || pinset as u32 >= pinset_limit {
                     return None;
                 }
-                pinouts.insert(pinout);
-                pinout
+                pinsets.insert(pinset);
+                pinset
             } else {
                 return None;
             };
@@ -354,7 +353,7 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
                     id: String::from(miner_id),
                     guard: String::from(guard_id),
                     plug: String::from(plug_id),
-                    pinout: miner_pinout as u32,
+                    pinset: miner_pinset as u32,
                     power_consumption: None,
                 }    
             );
