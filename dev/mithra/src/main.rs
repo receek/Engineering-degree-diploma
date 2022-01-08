@@ -12,19 +12,23 @@ use yaml_rust::{Yaml, YamlLoader};
 
 mod system;
 use system::*;
-
-// mod database;
-// use database::*;
+use system::structs::*;
 
 fn main() {
     let params = get_cli_parameters().unwrap_or_else(
         |e| e.exit()
     );
+
     let servers_file = params.value_of("servers").unwrap();
     let config_file = params.value_of("config").unwrap();
-
+    
     let mut servers_config = Ini::new();
     servers_config.load(servers_file).unwrap_or_else(|error_msg| {
+        eprintln!("{}", error_msg);
+        std::process::exit(1);
+    });
+    
+    let (start_year,start_month,billing_period, recovery_ratio) = get_contract_data(&servers_config).unwrap_or_else(|error_msg| {
         eprintln!("{}", error_msg);
         std::process::exit(1);
     });
@@ -39,50 +43,37 @@ fn main() {
         std::process::exit(1);
     });
 
-    let mut system_config = load_yaml_config(config_file).unwrap_or_else(|error_msg| {
-        eprintln!("{}", error_msg);
-        std::process::exit(1);
-    });
+    let (switchboard, guards, miners, plugs) = match load_yaml_config(config_file) {
+        Ok(devices) => devices,
+        Err(error_msg) => {
+            eprintln!("{}", error_msg);
+            std::process::exit(1);
+        }
+    };
 
-    // println!("{:?}", system_config);
-    
-    /* Config is validated and loaded */
+    let mut system = System {
+        start_year,
+        start_month,
+        billing_period,
+        recovery_ratio,
+        db_config,
+        mqtt_config,
+        switchboard,
+        guards,
+        miners,
+        plugs,
+    };
 
     /* Try to connect with database */
-    match db_config.connect(NoTls) {
-        Ok(conn) => {
-            if let Err(error) = conn.close() {
-                eprintln!("Database closing test connection: {}", error.to_string());
-                std::process::exit(1)    
-            }
-        },
-        Err(error) => {
-            eprintln!("Database test connection: {}", error.to_string());
-            std::process::exit(1)
-        },
-    }
-
-    /* Try to connect with MQTT server */
-    let (mut client, mut connection) = Client::new(mqtt_config.clone(), 1);
-    let msg = connection.iter().next();
-    if let Some(Err(error)) = msg {
-        eprintln!("MQTT server test connection: {}", error.to_string());
+    if let Err(error_msg) = system.check_servers_connection() {
+        eprintln!("{}", error_msg);
         std::process::exit(1);
     }
+
+    /* Initialize all system devices */
+    system.init();
+
     
-    if let Err(error ) = client.disconnect() {
-        eprintln!("MQTT server closing test connection: {}", error.to_string());
-        std::process::exit(1);
-    }
-
-    /* Start system */
-    system_config.init(mqtt_config.clone());
-
-    /* Run MQTT switchboard and plugs messages handler */
-
-    /* Run MQTT miners command handler and executor */
-
-    /* Run power consumption analyzer */
 }
 
 fn get_cli_parameters() -> Result<ArgMatches<'static>, Error> {
@@ -118,6 +109,50 @@ fn get_cli_parameters() -> Result<ArgMatches<'static>, Error> {
         )
     .get_matches_safe()
     
+}
+
+fn get_contract_data(params: &Ini) -> Result<(u32, u32, u32, f64), &str> {
+    let start_year = if let Ok(Some(value)) = params.getint("Contract", "YearStart") {
+        if let Ok(value) = u32::try_from(value) {
+            value
+        } else {
+            return Err("Contract start year improper value!");
+        }
+    } else {
+        return Err("Contract start year configuration invalid!");
+    };
+
+    let start_month = if let Ok(Some(value)) = params.getint("Contract", "MonthStart") {
+        if let Ok(value) = u32::try_from(value) {
+            value
+        } else {
+            return Err("Contract start year improper value!");
+        }
+    } else {
+        return Err("Contract start year configuration invalid!");
+    };
+
+    let billing_period_months = if let Ok(Some(value)) = params.getint("Contract", "BillingPeriod") {
+        if let Ok(value) = u32::try_from(value) {
+            value
+        } else {
+            return Err("Billing data improper value!");
+        }
+    } else {
+        return Err("Billing data configuration invalid!");
+    };
+
+    let recovery_ratio = if let Ok(Some(value)) = params.getfloat("Contract", "RecoveryRatio") {
+        if 0.0 <= value && value <= 1.0 {
+            value
+        } else {
+            return Err("Recovery ratio improper value!");
+        }
+    } else {
+        return Err("Recovery ratio configuration invalid!");
+    };
+    
+    return Ok((start_year, start_month, billing_period_months, recovery_ratio));
 }
 
 fn get_db_config(params: &Ini) -> Result<Config, &str> {
@@ -210,7 +245,16 @@ fn get_mqtt_config(params: &Ini) -> Result<MqttOptions, &str> {
 } 
 
 
-fn load_yaml_config(path: &str) -> Result<System, &str> {
+fn load_yaml_config(path: &str) -> 
+Result<
+    (
+        Switchboard,
+        HashMap<String, Guard>,
+        HashMap<String, Miner>,
+        HashMap<String, Plug>
+    ),
+    &str
+> {
     let content = if let Ok(mut file) = File::open(path) {
         let mut content = String::new();
         if let Ok(_) = file.read_to_string(&mut content) {
@@ -230,14 +274,20 @@ fn load_yaml_config(path: &str) -> Result<System, &str> {
 
     let doc = &docs[0];
 
-    if let Some(system) = parse_yaml(doc) {
-        Ok(system)
+    if let Some(devices) = parse_yaml(doc) {
+        Ok(devices)
     } else {
         Err("Not valid yaml configuration!")
     }
 }
 
-fn parse_yaml(conf: &Yaml) -> Option<System> {
+fn parse_yaml(conf: &Yaml) 
+-> Option<(
+    Switchboard,
+    HashMap<String, Guard>,
+    HashMap<String, Miner>,
+    HashMap<String, Plug>
+)> {
     /* Checking switchboard */
     if let Yaml::BadValue = conf["switchboard"] {
         return None;
@@ -254,33 +304,27 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
     } 
 
     /* Checking guards */
-    let guards = if let Some(array) = conf["guards"].as_vec() {
+    let guards_array = if let Some(array) = conf["guards"].as_vec() {
         array
     } else {
         return None
     };
 
-    let mut system = System {
-        switchboard: Switchboard {
-            id: String::from(switchboard_id),
-            state: DeviceState::Unknown,
-        },
-        guards: HashMap::new(),
-        miners: HashMap::new(),
-        plugs: HashMap::new(),
+    let switchboard = Switchboard {
+        id: String::from(switchboard_id),
+        state: DeviceState::Unknown,
     };
 
-    let mut guard_ids = HashSet::new();
-    let mut plug_ids = HashSet::new();
-    let mut miner_ids = HashSet::new();
+    let mut guards = HashMap::new();
+    let mut miners = HashMap::new();
+    let mut plugs = HashMap::new();
 
-    for guard in guards {
+    for guard in guards_array {
         let guard_id = if let Some(guard_id) = guard["id"].as_str() {
             /* Guards id are uniqe */
-            if guard_ids.contains(guard_id) {
+            if guards.contains_key(guard_id) {
                 return None;
             }
-            guard_ids.insert(guard_id);
             guard_id
         } else {
             return None;
@@ -299,7 +343,7 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
 
         let pinset_limit = guard_type.get_pinset_limit();
 
-        let miners = if let Some(array) = guard["miners"].as_vec() {
+        let miners_array = if let Some(array) = guard["miners"].as_vec() {
             array
         } else {
             return None;
@@ -309,18 +353,17 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
             id: String::from(guard_id),
             miners: Vec::new(),
             board_type: guard_type,
-            state: DeviceState::Available,
+            state: DeviceState::Unknown,
         };
         /* Check all miners under this guard */
-        for miner in miners {
+        for miner in miners_array {
             let mut pinsets = HashSet::new();
             
             let miner_id = if let Some(miner_id) = miner["id"].as_str() {
                 /* Miner ids are uniqe */
-                if miner_ids.contains(miner_id) {
+                if miners.contains_key(miner_id) {
                     return None;
                 }
-                miner_ids.insert(miner_id);
                 miner_id
             } else {
                 return None;
@@ -337,37 +380,37 @@ fn parse_yaml(conf: &Yaml) -> Option<System> {
             };
 
             let plug_id = if let Some(plug_id) = miner["plug"].as_str() {
-                if plug_ids.contains(plug_id) {
+                if plugs.contains_key(plug_id) {
                     return None;
                 }
-                plug_ids.insert(plug_id);
                 plug_id
             } else {
                 return None;
             };
 
             local_guard.miners.push(String::from(miner_id));
-            system.miners.insert(
+            miners.insert(
                 String::from(miner_id),
                 Miner {
                     id: String::from(miner_id),
                     guard: String::from(guard_id),
-                    plug: String::from(plug_id),
+                    plug_id: String::from(plug_id),
                     pinset: miner_pinset as u32,
                     power_consumption: None,
                 }    
             );
-            system.plugs.insert(
+            plugs.insert(
                 String::from(plug_id),
                 Plug {
                     id: String::from(plug_id),
                     state: DeviceState::Unknown,
+                    miner_id: String::from(miner_id),
                 }
             );
         }
 
-        system.guards.insert(String::from(guard_id), local_guard);
+        guards.insert(String::from(guard_id), local_guard);
     }
 
-    Some(system)
+    Some((switchboard, guards, miners, plugs))
 }

@@ -1,226 +1,319 @@
+use chrono::{NaiveDate, NaiveDateTime, Utc, Datelike};
 
 use json::JsonValue;
 
+use postgres::{Config, NoTls};
+
 use r2d2::State;
+
 use rumqttc::{Client, Event, MqttOptions, Packet, QoS, Publish};
 
-use std::collections::HashMap;
+use sscanf::scanf;
+
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, PartialEq)]
-pub enum DeviceState {
-    Unknown,
-    Available,
-    Inaccessible,
-    Broken,
-}
+mod database;
 
-#[derive(Debug, PartialEq)]
-pub enum ShellyType {
-    /* List can be extended in future */
-    SHEM_3,
-    SHPLG_S
-}
+mod handlers;
 
-impl FromStr for ShellyType {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "SHEM_3" => Ok(Self::SHEM_3),
-            "SHPLG_S" => Ok(Self::SHPLG_S),
-            _ => Err(String::from("Unimplemented shelly device")) 
-        }
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum GuardType {
-    /* List can be extended in future */
-    ESP32
-}
-
-impl GuardType {
-    pub fn get_pinset_limit(&self) -> u32 {
-        match self {
-            GuardType::ESP32 => 4
-        }
-    }
-}
-
-impl FromStr for GuardType {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ESP32" => Ok(Self::ESP32),
-            _ => Err(String::from("Unimplemented guard type")) 
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Plug {
-    pub id: String,
-    pub state: DeviceState,
-    // last seen
-}
-
-#[derive(Debug)]
-pub struct Miner {
-    pub id: String,
-    pub plug: String,
-    pub guard: String,
-    pub pinset: u32,
-    pub power_consumption: Option<u32>, // Watts
-}
-
-
-#[derive(Debug)]
-pub struct Guard {
-    pub id: String,
-    pub miners: Vec<String>,
-    pub board_type: GuardType,
-    pub state: DeviceState,
-}
-
-#[derive(Debug)]
-pub struct Switchboard {
-    pub id: String,
-    pub state: DeviceState,
-}
+pub mod structs;
+use structs::*;
 
 #[derive(Debug)]
 pub struct System {
+    /* Contract data */
+    pub start_year: u32,
+    pub start_month: u32,
+    pub billing_period: u32,
+    pub recovery_ratio: f64,
+
+    /* Postgres configuration */
+    pub db_config: Config,
+    
+    /* MQTT configuration */
+    pub mqtt_config: MqttOptions,
+
+    /* Devices in system */
     pub switchboard: Switchboard,
     pub guards: HashMap<String, Guard>,
     pub miners: HashMap<String, Miner>,
-    pub plugs: HashMap<String, Plug>, // maps plug to miner 
+    pub plugs: HashMap<String, Plug>,
 }
 
 impl System {
-    pub fn init(&mut self, mut mqtt_config: MqttOptions) {
-        println!("Enter init");
-        mqtt_config.set_keep_alive(5);
-        let (mut client, mut connection) = Client::new(mqtt_config.clone(), 10);
-        client.subscribe("shellies/announce", QoS::AtMostOnce).unwrap();
-        client.subscribe("guards/announce", QoS::AtMostOnce).unwrap();
 
-        if let Err(error_msg) = client.publish(
-            "shellies/command",
-            QoS::AtMostOnce,
-            false,
-            "announce".as_bytes()
-        ) {
-            eprintln!("Shellies annouce command error: {}", error_msg);
-            std::process::exit(1);
-        }
+pub fn check_servers_connection(&self) -> Result<(), &'static str> {
+    let mut db_client = match self.db_config.connect(NoTls) {
+        Ok(conn) => conn,
+        Err(error) => {
+            eprintln!("Database test connection: {}", error.to_string());
+            std::process::exit(1)
+        },
+    };
 
-        if let Err(error_msg) = client.publish(
-            "guards/command",
-            QoS::AtMostOnce,
-            false,
-            "announce".as_bytes()
-        ) {
-            eprintln!("Guards annouce command error: {}", error_msg);
-            std::process::exit(1);
-        }
-
-        let timer = Instant::now();
-        let time = Duration::from_secs(5);
-        println!("Commands sent");
-        for msg in connection.iter() {
-            if timer.elapsed() > time {
-                client.disconnect().unwrap();
-                println!("HERE");
-                break;
-            }
-
-            match msg {
-                Ok(Event::Incoming(Packet::Publish(data))) => {
-                    self.parse_announce(&data);
-                },
-                Ok(_) => (), 
-                Err(_) => (),
-            }
-        }
-
-        if self.switchboard.state != DeviceState::Available {
-
-        }
-        
+    /* Try to connect with MQTT server */
+    let (mut client, mut connection) = Client::new(self.mqtt_config.clone(), 1);
+    let msg = connection.iter().next();
+    if let Some(Err(error)) = msg {
+        eprintln!("MQTT server test connection: {}", error.to_string());
+        std::process::exit(1);
+    }
+    
+    if let Err(error ) = client.disconnect() {
+        eprintln!("MQTT server closing test connection: {}", error.to_string());
+        std::process::exit(1);
     }
 
-    fn parse_announce(&mut self, data: &Publish) {
-        let device = json::parse(
-            std::str::from_utf8(&data.payload).unwrap()
-        ).unwrap();
+    return Ok(());
+}
 
-        if data.topic == "shellies/announce" {
-            let id = device["id"].as_str().unwrap();
-            let dev_type =  ShellyType::from_str(device["model"].as_str().unwrap());
-            match dev_type {
-                Ok(ShellyType::SHEM_3) => {
-                    /* It is switchboard */
-                    if self.switchboard.id == id {
-                        self.switchboard.state = DeviceState::Available;
-                    } else {
-                        return;
-                    }
-                },
-                Ok(ShellyType::SHPLG_S) => {
-                    /* It is plug */
-                    if let Some(plug) = self.plugs.get_mut(id) {
-                        plug.state = DeviceState::Available;
-                    }
-                    else {
-                        return;
-                    }
-                },
-                Err(_) => {}
-            }
-        } else if data.topic == "guards/announce" {
-            let guard_id = device["id"].as_str().unwrap();
-            let dev_type = match GuardType::from_str(device["type"].as_str().unwrap()) {
-                Ok(t) => t,
-                Err(error_msg ) => {
-                    eprintln!("{}", error_msg);
-                    std::process::exit(1);
+pub fn init(&mut self) {
+    self.mqtt_config.set_keep_alive(5);
+    let (mut client, mut connection) = Client::new(self.mqtt_config.clone(), 1024);
+    client.subscribe("shellies/announce", QoS::AtMostOnce).unwrap();
+    client.subscribe("guards/announce", QoS::AtMostOnce).unwrap();
+
+    if let Err(error_msg) = client.publish(
+        "shellies/command",
+        QoS::AtMostOnce,
+        false,
+        "announce".as_bytes()
+    ) {
+        eprintln!("Shellies annouce command error: {}", error_msg);
+        std::process::exit(1);
+    }
+
+    if let Err(error_msg) = client.publish(
+        "guards/command",
+        QoS::AtMostOnce,
+        false,
+        "announce".as_bytes()
+    ) {
+        eprintln!("Guards annouce command error: {}", error_msg);
+        std::process::exit(1);
+    }
+
+    let timer = Instant::now();
+    let time = Duration::from_secs(5); // TODO: CHANGE to not less than 30s.
+    println!("Announce message sent");
+    for msg in connection.iter() {
+        if timer.elapsed() > time {
+            client.disconnect().unwrap();
+            break;
+        }
+
+        match msg {
+            Ok(Event::Incoming(Packet::Publish(data))) => {
+                self.parse_announce(&data);
+            },
+            Ok(_) => (), 
+            Err(_) => (),
+        }
+    }
+
+    if self.switchboard.state != DeviceState::Available {
+        eprintln!("Switchboard is not available!");
+        std::process::exit(1);
+    }
+
+    let mut db_client = match self.db_config.connect(NoTls) {
+        Ok(conn) => conn,
+        Err(error) => {
+            eprintln!("Database test connection: {}", error.to_string());
+            std::process::exit(1)
+        },
+    };
+
+    /* Check database schema and create needed tables eventually */
+    let period = current_biling_period(self.start_year as i32, self.start_month, self.billing_period);
+    println!("Checking period from {:?} to {:?}", period.0, period.1);
+    database::check_db_schema(&mut db_client, period);
+
+    /* Obtaining power state of switchboard */
+
+    let switchboard_params = if let Some(params) = database::get_switchboard_params(&mut db_client, period.0) {
+        println!("Switchboard data obtained from database.");
+        params
+    } else {
+        println!("Switchboard data obtained from MQTT server.");
+        self.get_switchboard_data()
+    };
+
+    /* Obtaining energy consumed by miners */
+    let miners_consumption = database::get_miners_consumption(&mut db_client, period.0);
+    println!("Miners have consumed {} watt-minute until now.", miners_consumption);
+
+    /* Run MQTT switchboard and plugs messages handler */
+
+    /* Run MQTT miners command handler and executor */
+
+    /* Run power consumption analyzer */
+
+}
+
+fn parse_announce(&mut self, data: &Publish) {
+    let device = json::parse(
+        std::str::from_utf8(&data.payload).unwrap()
+    ).unwrap();
+
+    if data.topic == "shellies/announce" {
+        let id = device["id"].as_str().unwrap();
+        let dev_type =  ShellyType::from_str(device["model"].as_str().unwrap());
+        println!("dev type = {:?}", device["model"].as_str().unwrap());
+        match dev_type {
+            Ok(ShellyType::SHEM_3) => {
+                /* It is switchboard */
+                if self.switchboard.id == id {
+                    self.switchboard.state = DeviceState::Available;
+                } else {
+                    return;
                 }
-            };
-
-            if let Some(guard) = self.guards.get_mut(guard_id) {
-                guard.state = DeviceState::Available;
-                if (guard.board_type != dev_type) {
-                    eprintln!("Guard {} has different board type than in config file", guard_id);
-                    std::process::exit(1);
-                } 
-            }
-            else {
-                /* Guard is not defined in config file */
-                return;
-            }
-
-            if let JsonValue::Array(miners) = &device["miners"] {
-                for miner in miners {
-                    let miner_id = miner["id"].as_str().unwrap();
-                    let pinset = miner["pinset"].as_u32().unwrap();
-                    if let Some(miner) = self.miners.get_mut(miner_id) {
-                        if miner.id != miner_id || miner.pinset != pinset {
-                            eprintln!("Miner {} has different configuration", miner_id);
-                            std::process::exit(1);
-                        }
-                    } else {
-                        /* Miner is not defined in config file */
-                        eprintln!("Miner {} is not configured in config file", miner_id);
-                        std::process::exit(1);
-                    }
+            },
+            Ok(ShellyType::SHPLG_S) => {
+                /* It is plug */
+                if let Some(plug) = self.plugs.get_mut(id) {
+                    plug.state = DeviceState::Available;
                 }
-            } else {
-                eprintln!("Guard {} sent improper json format", guard_id);
+                else {
+                    return;
+                }
+            },
+            Err(_) => {}
+        }
+    } else if data.topic == "guards/announce" {
+        let guard_id = device["id"].as_str().unwrap();
+        let dev_type = match GuardType::from_str(device["type"].as_str().unwrap()) {
+            Ok(t) => t,
+            Err(error_msg ) => {
+                eprintln!("{}", error_msg);
                 std::process::exit(1);
             }
+        };
+
+        let guard = if let Some(guard) = self.guards.get_mut(guard_id) {
+            if (guard.board_type != dev_type) {
+                eprintln!("Guard {} has different board type than in config file", guard_id);
+                std::process::exit(1);
+            } 
+            guard.state = DeviceState::ConfigExpired;
+            guard
+        }
+        else {
+            /* Guard is not defined in config file */
+            return;
+        };
+
+        let mut guard_miners = guard.miners.clone();
+
+        if let JsonValue::Array(miners) = &device["miners"] {
+            for miner in miners {
+                let miner_id = miner["id"].as_str().unwrap();
+                let pinset = miner["pinset"].as_u32().unwrap();
+                if let Some(miner) = self.miners.get_mut(miner_id) {
+                    /* Check miner_id from announce cover system data from config file */
+                    if miner.id != miner_id || miner.pinset != pinset {
+                        /* Miner has different configuration */
+                        continue;
+                    }
+
+                    if let Some(position) = guard_miners.iter().position(|x| x == miner_id) {
+                        guard_miners.swap_remove(position);
+                    }
+                } else {
+                    /* Miner is not defined in config file */
+                    eprintln!("Miner {} is not configured in config file", miner_id);
+                    std::process::exit(1);
+                }
+            }
+
+            if guard_miners.is_empty() {
+                guard.state = DeviceState::Available;
+            }
         } else {
-            /* Got msg from unimplemented device */
+            eprintln!("Guard {} sent improper json format", guard_id);
+            std::process::exit(1);
+        }
+    } else {
+        /* Got msg from unimplemented device */
+    }
+}
+
+fn get_switchboard_data(&self) -> (u64, u64) {
+    let mut mqtt_config = self.mqtt_config.clone();
+    mqtt_config.set_keep_alive(5);
+    let (mut client, mut connection) = Client::new(mqtt_config, 128);
+
+    let topic_consumed = format!("shellies/{}/emeter/+/total", self.switchboard.id);
+    let topic_returned = format!("shellies/{}/emeter/+/total_returned", self.switchboard.id);
+
+    //let topic_pattern = format!("shellies/{}/emeter/{{}}/{{}}", self.switchboard.id);
+
+    client.subscribe(topic_consumed, QoS::AtMostOnce).unwrap();
+    client.subscribe(topic_returned, QoS::AtMostOnce).unwrap();
+    
+
+    let mut consumed = [None; 3];
+    let mut returned = [None; 3];
+
+    for msg in connection.iter() {
+        if let ([Some(_), Some(_), Some(_)], [Some(_), Some(_), Some(_)]) = (consumed, returned) {
+            client.disconnect().unwrap();
+            break;
+        }
+
+        match msg {
+            Ok(Event::Incoming(Packet::Publish(data))) => {
+                let (_, i, d) = scanf!(data.topic, "shellies/{}/emeter/{}/{}", String, usize, String).unwrap();
+                let value = f64::from_str(std::str::from_utf8(&data.payload).unwrap()).unwrap().ceil() as u64;
+                match d.as_str() {
+                    "total" => consumed[i] = Some(value),
+                    "total_returned" => returned[i] = Some(value),
+                    _ => {}
+                }
+            },
+            Ok(_) => (), 
+            Err(_) => (),
         }
     }
+
+    let consumed = consumed.iter().fold(0 as u64, |acc, x| acc + x.unwrap());
+    let returned = returned.iter().fold(0 as u64, |acc, x| acc + x.unwrap());
+
+    return (consumed, returned);
+}
+
+}
+
+pub fn current_biling_period(start_year: i32, start_month: u32, billing_period: u32) -> (NaiveDateTime, NaiveDateTime) {
+    
+    fn get_period(mut year: i32, mut month: u32, mut period: u32) -> (NaiveDateTime, NaiveDateTime) {
+        let start = NaiveDate::from_ymd(year, month, 1).and_hms( 0, 0, 0);
+        
+        while period >= 12 {
+            year += 1;
+            period -= 12;
+        }
+
+        month += period;
+        if month > 12 {
+            year += 1;
+            month -= 12 ;
+        }
+
+        let end = NaiveDate::from_ymd(year, month, 1).and_hms( 0, 0, 0);
+
+        return (start, end);
+    }
+
+    let (mut period_start, mut period_end) = get_period(start_year, start_month, billing_period);
+    let now = Utc::now().naive_utc();
+    while period_end < now {
+        let period = get_period(period_end.year(), period_end.month(), billing_period);
+        period_start = period.0;
+        period_end = period.1;
+    }
+
+    return (period_start, period_end);
 }
