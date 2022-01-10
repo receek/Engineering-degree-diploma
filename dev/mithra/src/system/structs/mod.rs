@@ -1,5 +1,9 @@
 use std::str::FromStr;
 
+use chrono::{NaiveDate, NaiveDateTime};
+
+use std::time::{Instant};
+
 #[derive(Debug, PartialEq)]
 pub enum DeviceState {
     Unknown,
@@ -83,9 +87,20 @@ pub struct Switchboard {
     pub state: DeviceState,
 }
 
-/* MQTT energy data representation */
+/* Miner data for miner MQTT messages receiver loop */
 
-// pub struct SwitchboardEntry {
-//     pub consumed: [Option<u64>; 3],
-//     pub returned: [Option<u64>; 3],
-// }
+pub struct MinerData {
+    pub last_received: Option<Instant>,
+    pub name: String,
+    pub energy_consumed: u64,
+    pub phase: u16,
+    pub power: f32,
+}
+
+/* Energy data representation for channel */
+
+#[derive(Debug)]
+pub enum EnergyData {
+    Switchboard { ts: NaiveDateTime, ec: [u64; 3], er: [u64; 3], tc: [f64; 3], tr: [f64; 3] },
+    Miner { ts: NaiveDateTime, name: String, ec: u64, phase: u16, power: f32 },
+}

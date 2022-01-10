@@ -13,6 +13,8 @@ use sscanf::scanf;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use std::sync::mpsc::{self, Sender, Receiver};
+use std::thread;
 
 mod database;
 
@@ -20,6 +22,14 @@ mod handlers;
 
 pub mod structs;
 use structs::*;
+
+#[derive(Debug)]
+pub struct MqttConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: String,
+}
 
 #[derive(Debug)]
 pub struct System {
@@ -33,7 +43,7 @@ pub struct System {
     pub db_config: Config,
     
     /* MQTT configuration */
-    pub mqtt_config: MqttOptions,
+    pub mqtt_config: MqttConfig,
 
     /* Devices in system */
     pub switchboard: Switchboard,
@@ -54,7 +64,10 @@ pub fn check_servers_connection(&self) -> Result<(), &'static str> {
     };
 
     /* Try to connect with MQTT server */
-    let (mut client, mut connection) = Client::new(self.mqtt_config.clone(), 1);
+    let mut mqtt_options = self.get_mqtt_options("Test_connection");
+    mqtt_options.set_keep_alive(60);
+
+    let (mut client, mut connection) = Client::new(mqtt_options, 1);
     let msg = connection.iter().next();
     if let Some(Err(error)) = msg {
         eprintln!("MQTT server test connection: {}", error.to_string());
@@ -70,8 +83,10 @@ pub fn check_servers_connection(&self) -> Result<(), &'static str> {
 }
 
 pub fn init(&mut self) {
-    self.mqtt_config.set_keep_alive(5);
-    let (mut client, mut connection) = Client::new(self.mqtt_config.clone(), 1024);
+    let mut mqtt_options = self.get_mqtt_options("Announce_loop");
+    mqtt_options.set_keep_alive(5);
+
+    let (mut client, mut connection) = Client::new(mqtt_options, 1024);
     client.subscribe("shellies/announce", QoS::AtMostOnce).unwrap();
     client.subscribe("guards/announce", QoS::AtMostOnce).unwrap();
 
@@ -132,7 +147,6 @@ pub fn init(&mut self) {
     database::check_db_schema(&mut db_client, period);
 
     /* Obtaining power state of switchboard */
-
     let switchboard_params = if let Some(params) = database::get_switchboard_params(&mut db_client, period.0) {
         println!("Switchboard data obtained from database.");
         params
@@ -143,14 +157,83 @@ pub fn init(&mut self) {
 
     /* Obtaining energy consumed by miners */
     let miners_consumption = database::get_miners_consumption(&mut db_client, period.0);
-    println!("Miners have consumed {} watt-minute until now.", miners_consumption);
+    println!("Miners have consumed {:?} watt-minute until now.", miners_consumption);
+}
 
-    /* Run MQTT switchboard and plugs messages handler */
+pub fn run(&mut self) {
+    // let (main_tx, main_rx) = mpsc::channel();
+    let (db_tx, db_rx) = mpsc::channel();
 
-    /* Run MQTT miners command handler and executor */
+    /* Run database thread */
+    let db_thread = {
+        let db_config = self.db_config.clone();
+        thread::spawn(|| database::insert_energy_data(db_config, db_rx))
+    };
 
-    /* Run power consumption analyzer */
+    /* Run switchboard MQTT messages receiver */
+    let mut mqtt_options = self.get_mqtt_options("Switchboard_loop");
+    mqtt_options.set_keep_alive(60);
 
+    let (mut switchboard_mqtt, switchboard_connection) = Client::new(mqtt_options, 1024);
+
+    let switchboard_id = &self.switchboard.id;
+    let topics = vec![
+        format!("shellies/{}/emeter/+/energy", switchboard_id),
+        format!("shellies/{}/emeter/+/returned_energy", switchboard_id),
+        format!("shellies/{}/emeter/+/total", switchboard_id),
+        format!("shellies/{}/emeter/+/total_returned", switchboard_id),
+    ];
+
+    for topic in topics {
+        switchboard_mqtt.subscribe(topic, QoS::AtMostOnce).unwrap();
+    }
+
+    let switchboard_thread = {
+        let db_tx = db_tx.clone();
+        thread::spawn(|| handlers::switchboard_loop(switchboard_connection, db_tx))
+    };
+    println!("Switchboard loop spawned");
+
+    /* Run miners MQTT messages receiver */
+    let mut mqtt_options = self.get_mqtt_options("Miners_loop");
+    mqtt_options.set_keep_alive(60);
+    let (mut miners_mqtt, miners_connection) = Client::new(mqtt_options, 1024);
+
+    let mut miners = HashMap::new();
+    for (id, miner) in self.miners.iter() {
+        miners.insert(miner.plug_id.clone(), structs::MinerData{
+            last_received: None,
+            name: id.clone(),
+            energy_consumed: 0,
+            phase: 0, //TODO: miner.phase,
+            power: 0.0,
+        });
+
+        //TODO: check miner is active
+        miners_mqtt.subscribe(
+            format!("shellies/{}/relay/0/power", miner.plug_id),
+            QoS::AtMostOnce
+        ).unwrap();
+        miners_mqtt.subscribe(
+            format!("shellies/{}/relay/0/energy", miner.plug_id),
+            QoS::AtMostOnce
+        ).unwrap();
+    }
+
+    let miners_thread = {
+        let db_tx = db_tx.clone();
+        thread::spawn(|| handlers::miners_loop(miners_connection, miners, db_tx))
+    };
+    println!("Miners loop spawned");
+
+    //thread::sleep(Duration::from_secs(70));
+    //switchboard_mqtt.disconnect().unwrap();
+    
+    db_thread.join().unwrap();
+    //switchboard_thread.join().unwrap();
+    miners_thread.join().unwrap();
+
+    println!("Threads terminated");
 }
 
 fn parse_announce(&mut self, data: &Publish) {
@@ -193,7 +276,7 @@ fn parse_announce(&mut self, data: &Publish) {
         };
 
         let guard = if let Some(guard) = self.guards.get_mut(guard_id) {
-            if (guard.board_type != dev_type) {
+            if guard.board_type != dev_type {
                 eprintln!("Guard {} has different board type than in config file", guard_id);
                 std::process::exit(1);
             } 
@@ -240,10 +323,23 @@ fn parse_announce(&mut self, data: &Publish) {
     }
 }
 
-fn get_switchboard_data(&self) -> (u64, u64) {
-    let mut mqtt_config = self.mqtt_config.clone();
-    mqtt_config.set_keep_alive(5);
-    let (mut client, mut connection) = Client::new(mqtt_config, 128);
+fn get_mqtt_options(&self, client_id: &str) -> MqttOptions {
+    let mut mqtt_options = MqttOptions::new(
+        client_id,
+        self.mqtt_config.host.clone(), 
+        self.mqtt_config.port
+    );
+    mqtt_options.set_credentials(
+        self.mqtt_config.user.clone(),
+        self.mqtt_config.password.clone()
+    );
+    return mqtt_options;
+} 
+
+fn get_switchboard_data(&self) -> ([f64; 3], [f64; 3]) {
+    let mut mqtt_options = self.get_mqtt_options("Initial_loop");
+    mqtt_options.set_keep_alive(5);
+    let (mut client, mut connection) = Client::new(mqtt_options, 128);
 
     let topic_consumed = format!("shellies/{}/emeter/+/total", self.switchboard.id);
     let topic_returned = format!("shellies/{}/emeter/+/total_returned", self.switchboard.id);
@@ -266,7 +362,7 @@ fn get_switchboard_data(&self) -> (u64, u64) {
         match msg {
             Ok(Event::Incoming(Packet::Publish(data))) => {
                 let (_, i, d) = scanf!(data.topic, "shellies/{}/emeter/{}/{}", String, usize, String).unwrap();
-                let value = f64::from_str(std::str::from_utf8(&data.payload).unwrap()).unwrap().ceil() as u64;
+                let value = f64::from_str(std::str::from_utf8(&data.payload).unwrap()).unwrap().ceil();
                 match d.as_str() {
                     "total" => consumed[i] = Some(value),
                     "total_returned" => returned[i] = Some(value),
@@ -278,8 +374,8 @@ fn get_switchboard_data(&self) -> (u64, u64) {
         }
     }
 
-    let consumed = consumed.iter().fold(0 as u64, |acc, x| acc + x.unwrap());
-    let returned = returned.iter().fold(0 as u64, |acc, x| acc + x.unwrap());
+    let consumed = [consumed[0].unwrap(), consumed[1].unwrap(), consumed[2].unwrap()];
+    let returned = [returned[0].unwrap(), returned[1].unwrap(), returned[2].unwrap()];
 
     return (consumed, returned);
 }

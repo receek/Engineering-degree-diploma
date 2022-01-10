@@ -14,6 +14,7 @@ mod system;
 use system::*;
 use system::structs::*;
 
+
 fn main() {
     let params = get_cli_parameters().unwrap_or_else(
         |e| e.exit()
@@ -72,8 +73,7 @@ fn main() {
 
     /* Initialize all system devices */
     system.init();
-
-    
+    system.run();
 }
 
 fn get_cli_parameters() -> Result<ArgMatches<'static>, Error> {
@@ -204,7 +204,7 @@ fn get_db_config(params: &Ini) -> Result<Config, &str> {
     return Ok(config);
 }
 
-fn get_mqtt_config(params: &Ini) -> Result<MqttOptions, &str> {
+fn get_mqtt_config(params: &Ini) -> Result<MqttConfig, &str> {
     let host = if let Some(value) = params.get("Mqtt_server", "Host") {
         if hostname_validator::is_valid(&value)  {
             value
@@ -237,11 +237,12 @@ fn get_mqtt_config(params: &Ini) -> Result<MqttOptions, &str> {
         return Err("MQTT password configuration missing");
     };
 
-    let mut mqtt_options = MqttOptions::new("Mithra_mqtt_client", host, port);
-    mqtt_options.set_credentials(user, password);
-    mqtt_options.set_keep_alive(60);
-
-    return Ok(mqtt_options);
+    return Ok(MqttConfig {
+        host,
+        port,
+        user,
+        password,
+    });
 } 
 
 
