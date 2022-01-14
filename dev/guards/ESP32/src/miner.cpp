@@ -26,7 +26,7 @@ static const char * commandNames[] = {
     "HardStop",
     "Reset",
     "HardReset",
-    "LedReport"
+    "StateReport"
 };
 
 const char * getCommandName(Command command) {
@@ -51,12 +51,14 @@ void Miner::setConfiguration(u8 pinSet_, String & id_) {
     pinLed = PINOUTS_SET[pinSet][2];
 
     id = id_;
-    commandPrefixTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/";
-    errorLogTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/error";
+    alertTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/alert";
+    commandTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/command";
+    statusTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/status";
 
     state = State::NotDefined;
     command = Command::Idle;
     isCommandRunning = false;
+    statusToReport = false;
     timestamp = 0;
     commandStage = 0;
 }
@@ -69,7 +71,7 @@ void Miner::runCommand() {
                 digitalWrite(pinPower, LOW);
                 state = State::Starting;
             } else {
-                client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+                client->publish(commandTopic, "PowerOn: FAILED");
                 return;
             }
         }
@@ -81,7 +83,7 @@ void Miner::runCommand() {
                 digitalWrite(pinPower, LOW);
                 state = State::Stopping;
             } else {
-                client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+                client->publish(commandTopic, "PowerOff: FAILED");
                 command = Command::Idle;
                 return;
             }
@@ -94,7 +96,7 @@ void Miner::runCommand() {
                 digitalWrite(pinPower, LOW);
                 state = State::HardStopping;
             } else {
-                client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+                client->publish(commandTopic, "HardStop: FAILED");
                 command = Command::Idle;
                 return;
             }
@@ -107,7 +109,7 @@ void Miner::runCommand() {
                 digitalWrite(pinReset, LOW);
                 state = State::Restarting;
             } else {
-                client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+                client->publish(commandTopic, "Reset: FAILED");
                 command = Command::Idle;
                 return;
             }
@@ -120,16 +122,13 @@ void Miner::runCommand() {
                 digitalWrite(pinPower, LOW);
                 state = State::HardStopping;
             } else {
-                client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Wrong state!");
+                client->publish(commandTopic, "HardReset: FAILED");
                 command = Command::Idle;
                 return;
             }
         }
-        case Command::LedReport: {
-            /* Do nothing, just set isCommandRunning later */
-        }
-        break;
 
+        case Command::StateReport:
         case Command::NotDefined:
         case Command::Idle:
         default:
@@ -159,11 +158,11 @@ void Miner::watchCommandExecution() {
             } else if (timer.isTimeElapsed(timestamp, STARTING_MILISECONDS)) {
                 if (digitalRead(pinLed) == HIGH) {
                     /* Send command execution DONE */
-                    client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                    client->publish(commandTopic, "DONE");
                     state = State::Running;
                 } else {
                     /* Send command execution FAILED */
-                    client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                    client->publish(commandTopic, "FAILED");
                     state = State::Unreachable;
                 }
                 command = Command::Idle;
@@ -182,14 +181,14 @@ void Miner::watchCommandExecution() {
             } else if (commandStage == 1) {
                 if (digitalRead(pinLed) == LOW) {
                     /* Send command execution DONE */
-                    client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                    client->publish(commandTopic, "DONE");
                     state = State::PoweredOff;
                     command = Command::Idle;
                     isCommandRunning = false;
 
                 } else if (timer.isTimeElapsed(timestamp, STOPPING_MILISECONDS)) {
                     /* Send command execution FAILED */
-                    client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                    client->publish(commandTopic, "FAILED");
                     state = State::Unreachable;
                     isCommandRunning = false;
                 }
@@ -207,11 +206,11 @@ void Miner::watchCommandExecution() {
             } else if (commandStage == 1 && timer.isTimeElapsed(timestamp, HARD_STOPPING_MILISECONDS)) {
                 if (digitalRead(pinLed) == LOW) {
                     /* Send command execution DONE */
-                    client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                    client->publish(commandTopic, "DONE");
                     state = State::PoweredOff;
                 } else {
                     /* Send command execution FAILED */
-                    client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                    client->publish(commandTopic, "FAILED");
                     state = State::Unreachable;
                 }
                 command = Command::Idle;
@@ -230,11 +229,11 @@ void Miner::watchCommandExecution() {
             } else if (commandStage == 1 && timer.isTimeElapsed(timestamp, RESETTING_MILISECONDS)) {
                 if (digitalRead(pinLed) == HIGH) {
                     /* Send command execution DONE */
-                    client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                    client->publish(commandTopic, "DONE");
                     state = State::Running;
                 } else {
                     /* Send command execution FAILED */
-                    client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                    client->publish(commandTopic, "FAILED");
                     state = State::Aborted;
                 }
                 command = Command::Idle;
@@ -258,7 +257,7 @@ void Miner::watchCommandExecution() {
                         ++commandStage;
                     } else {
                         /* Send command execution FAILED */
-                        client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                        client->publish(commandTopic, "FAILED");
                         state = State::Unreachable;
                         command = Command::Idle;
                         isCommandRunning = false;
@@ -274,11 +273,11 @@ void Miner::watchCommandExecution() {
                 if (timer.isTimeElapsed(timestamp, STARTING_MILISECONDS)) {
                     if (digitalRead(pinLed) == HIGH) {
                         /* Send command execution DONE */
-                        client->publish(commandPrefixTopic + getCommandName(command), "DONE");
+                        client->publish(commandTopic, "DONE");
                         state = State::Running;
                     } else {
                         /* Send command execution FAILED */
-                        client->publish(commandPrefixTopic + getCommandName(command), "FAILED: Miner is unreachable");
+                        client->publish(commandTopic, "FAILED");
                         state = State::Aborted;
                     }
                     command = Command::Idle;
@@ -287,19 +286,8 @@ void Miner::watchCommandExecution() {
             }
         }
         break;
-        
-        case Command::LedReport: {
-            if (digitalRead(pinLed) == HIGH) {
-                client->publish(commandPrefixTopic + getCommandName(command), "ON");
-            }
-            else {
-                client->publish(commandPrefixTopic + getCommandName(command), "OFF");
-            }
-            command = Command::Idle;
-            isCommandRunning = false;
-        }
-        break;
 
+        case Command::StateReport:
         case Command::NotDefined: 
         case Command::Idle: 
         break;
@@ -327,7 +315,7 @@ void Miner::watchMinerState() {
                 state = State::Unreachable;
 
                 /* Report problem  */
-                client->publish(errorLogTopic, "[PoweredOff][ON]");
+                client->publish(alertTopic, "PoweredOn");
             }
         }
         break;
@@ -337,7 +325,7 @@ void Miner::watchMinerState() {
                 state = State::Aborted;
 
                 /* Report problem  */
-                client->publish(errorLogTopic, "[Running][OFF]");
+                client->publish(alertTopic, "PoweredOff");
             }
         }
         break;
@@ -347,7 +335,7 @@ void Miner::watchMinerState() {
                 state = State::Unreachable;
 
                 /* Report problem  */
-                client->publish(errorLogTopic, "[Aborted][ON]");
+                client->publish(alertTopic, "PoweredOn");
             }
         }
         break;
@@ -359,11 +347,11 @@ void Miner::watchMinerState() {
         case State::Restarting:
         case State::HardRestarting:
         case State::Unreachable: {
-            Serial.printf(
-                "Miner %s has state %d in watchMinerState function!\n",
-                id, static_cast<u32>(state)
-            );
-            Serial.flush();
+            // Serial.printf(
+            //     "Miner %s has state %d in watchMinerState function!\n",
+            //     id, static_cast<u32>(state)
+            // );
+            // Serial.flush();
         }
         break;
 
@@ -377,4 +365,9 @@ void Miner::watchMinerState() {
         }
         break;
     }
+}
+
+void Miner::sendStatusMessage() {
+    client->publish(statusTopic, getStateName(state));
+    statusToReport = false;
 }

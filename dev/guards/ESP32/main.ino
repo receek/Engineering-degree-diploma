@@ -18,6 +18,7 @@ static i32 minersCount = -1;
 
 TimerWrapper& timer = getTimerInstance();
 u64 timestamp = 0;
+u64 pingTimestamp = 0;
 
 bool isConfigSet = false;
 bool runRestart = false;
@@ -133,7 +134,8 @@ void controlMessageReceiver(String &topic, String &payload) {
             i32 id = getMinerIndex(subtopic);
 
             if(id < 0) {
-                client.publish(topic, "FAILED: Undefined miner name");
+                // client.publish(topic, "FAILED");
+                // Serial
                 return;
             }
 
@@ -141,11 +143,15 @@ void controlMessageReceiver(String &topic, String &payload) {
 
             if (command == Command::NotDefined) {
                 /* Undefined command received */
-                client.publish(topic, "FAILED: Undefined command");
+                client.publish(miners[id].commandTopic, "UNDEFINED");
+                return;
+            } else if (command == Command::StateReport) {
+                /* Set flag */
+                miners[id].statusToReport = true;
                 return;
             } else if (miners[id].command != Command::Idle) {
                 /* Miner should be in idle command mode */
-                client.publish(topic, "FAILED: Miner is busy");
+                client.publish(topic, "BUSY");
                 return;
             }
 
@@ -157,7 +163,7 @@ void controlMessageReceiver(String &topic, String &payload) {
         }
         else {
             /* Undefined topic */
-            client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
+            // client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
             Serial.printf("Guard received message from unspecified topic: %s\n", topic);
             Serial.flush();
         }
@@ -204,7 +210,7 @@ void runGuardAnnounce() {
 
     minersBuffer += "[";
     for(int i = 0; i < minersCount; i++) {
-        sprintf(miner, "{\"id\": \"%s\" , \"pinset\": %d}", miners[i].id, miners[i].pinSet);
+        sprintf(miner, "{\"id\": \"%s\", \"pinset\": %d}", miners[i].id, miners[i].pinSet);
         minersBuffer += miner;
         if (i < minersCount - 1) {
             minersBuffer += ',';
@@ -223,8 +229,14 @@ void runGuardAnnounce() {
     client.publish(GUARD_ANNOUNCE_TOPIC, buffer);
 }
 
+void runGuardPing() {
+    client.publish(GUARD_PING_TOPIC);
+}
+
 void setup() {
     Serial.begin(115200);
+    Serial.println("dupa");
+    Serial.flush();
 
     /* WiFi configuring */
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -262,7 +274,7 @@ void setup() {
     client.publish(GUARD_CONFIGURED_TOPIC, DEV_ID);
 
     printConfigSummary();
-    timestamp = timer.getTimestamp();
+    timestamp = pingTimestamp = timer.getTimestamp();
 }
 
 void loop() {
@@ -280,6 +292,13 @@ void loop() {
     if (runAnnounce) {
         runAnnounce = false;
         runGuardAnnounce();
+    }
+
+    /* Checking do miners need report state */
+    for (u32 i = 0; i < minersCount; ++i) {
+        if (miners[i].statusToReport) {
+            miners[i].sendStatusMessage();
+        }
     }
 
     /* Checking commands on each miner */
@@ -304,5 +323,10 @@ void loop() {
         }
 
         timestamp = timer.getTimestamp();
+    }
+
+    if (timer.isTimeElapsed(pingTimestamp, 60000)) {
+        runGuardPing();
+        pingTimestamp = timer.getTimestamp();
     }
 }

@@ -62,7 +62,7 @@ fn main() {
         switchboard,
         guards,
         miners,
-        plugs,
+        plugs, 
     };
 
     /* Try to connect with database */

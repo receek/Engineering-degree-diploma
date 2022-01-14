@@ -4,9 +4,7 @@ use json::JsonValue;
 
 use postgres::{Config, NoTls};
 
-use r2d2::State;
-
-use rumqttc::{Client, Event, MqttOptions, Packet, QoS, Publish};
+use rumqttc::{Client, Event, MqttOptions, Outgoing, Packet, Publish, QoS};
 
 use sscanf::scanf;
 
@@ -123,6 +121,9 @@ pub fn init(&mut self) {
             Ok(Event::Incoming(Packet::Publish(data))) => {
                 self.parse_announce(&data);
             },
+            Ok(Event::Outgoing(Outgoing::Disconnect)) => {
+                break;
+            },
             Ok(_) => (), 
             Err(_) => (),
         }
@@ -163,6 +164,7 @@ pub fn init(&mut self) {
 pub fn run(&mut self) {
     // let (main_tx, main_rx) = mpsc::channel();
     let (db_tx, db_rx) = mpsc::channel();
+    let (main_tx, main_rx) = mpsc::channel();
 
     /* Run database thread */
     let db_thread = {
@@ -190,7 +192,8 @@ pub fn run(&mut self) {
 
     let switchboard_thread = {
         let db_tx = db_tx.clone();
-        thread::spawn(|| handlers::switchboard_loop(switchboard_connection, db_tx))
+        let main_tx = main_tx.clone();
+        thread::spawn(|| handlers::switchboard_loop(switchboard_connection, db_tx, main_tx))
     };
     println!("Switchboard loop spawned");
 
@@ -222,16 +225,87 @@ pub fn run(&mut self) {
 
     let miners_thread = {
         let db_tx = db_tx.clone();
-        thread::spawn(|| handlers::miners_loop(miners_connection, miners, db_tx))
+        let main_tx = main_tx.clone();
+        thread::spawn(|| handlers::miners_loop(miners_connection, miners, db_tx, main_tx))
     };
     println!("Miners loop spawned");
+
+    /* Run guards MQTT messages receiver */
+    let mut mqtt_options = self.get_mqtt_options("Guards_loop");
+    mqtt_options.set_keep_alive(60);
+    let (mut guards_mqtt, guards_connection) = Client::new(mqtt_options, 1024);
+
+    let guards_thread = {
+        let main_tx = main_tx.clone();
+        thread::spawn(|| handlers::guards_loop(guards_connection, main_tx))
+    };
+    println!("Miners loop spawned");
+    
+    guards_mqtt.subscribe(
+        format!("guards/started"),
+        QoS::AtMostOnce
+    ).unwrap();
+
+    //TODO:
+    /* 
+    - subscribe all guards topics
+    - publish to guards to report miners state message to active guards
+    - restart all guards with expierd config
+    */
+
+    loop {
+        let msg = main_rx.recv().unwrap();
+
+        match msg {
+            Message::Energy(EnergyData::Miner{ts, name, ec, phase, power}) => {
+                /* Update local energy data */
+            },
+            Message::Energy(EnergyData::Switchboard{ts, ec, er, tc, tr}) => {
+                /* Update local energy data */
+            },
+            Message::Guard {guard_id, ts, data} => {
+                match data {
+                    GuardData::Alert{miner_id, event} => {
+                        /* Try to react */
+                    },
+                    GuardData::Command{miner_id, status} => {
+                        /* Check if it is succesfull, change state */
+                    },
+                    GuardData::Configured => {
+                        /* Change guard state, publish state message to obtain miners status */
+                    },
+                    GuardData::Ping => {
+                        /* Update guard timestamp */
+                    },
+                    GuardData::Started => {
+                        println!("{:?}", data);
+                        if let Some(guard) = self.guards.get(&guard_id) {
+                            let config = self.get_guard_config(&guard_id);
+                            guards_mqtt.publish(
+                                format!("guards/{}/config", guard_id),
+                                QoS::AtMostOnce,
+                                false,
+                                config
+                            ).unwrap();
+                        } else {
+                            eprintln!("Main loop - undefined guard started: {}", guard_id);
+                        }
+                    },
+                    GuardData::State{miner_id, state} => {
+                        /* Update miner state */
+                    },
+                }
+            },
+        }
+    }
 
     //thread::sleep(Duration::from_secs(70));
     //switchboard_mqtt.disconnect().unwrap();
     
     db_thread.join().unwrap();
-    //switchboard_thread.join().unwrap();
+    switchboard_thread.join().unwrap();
     miners_thread.join().unwrap();
+    guards_thread.join().unwrap();
 
     println!("Threads terminated");
 }
@@ -344,8 +418,6 @@ fn get_switchboard_data(&self) -> ([f64; 3], [f64; 3]) {
     let topic_consumed = format!("shellies/{}/emeter/+/total", self.switchboard.id);
     let topic_returned = format!("shellies/{}/emeter/+/total_returned", self.switchboard.id);
 
-    //let topic_pattern = format!("shellies/{}/emeter/{{}}/{{}}", self.switchboard.id);
-
     client.subscribe(topic_consumed, QoS::AtMostOnce).unwrap();
     client.subscribe(topic_returned, QoS::AtMostOnce).unwrap();
     
@@ -378,6 +450,23 @@ fn get_switchboard_data(&self) -> ([f64; 3], [f64; 3]) {
     let returned = [returned[0].unwrap(), returned[1].unwrap(), returned[2].unwrap()];
 
     return (consumed, returned);
+}
+
+pub fn get_guard_config(&self, guard_id: &String) -> String {
+    let guard = self.guards.get(guard_id).unwrap();
+    let mut config = self.miners.len().to_string();
+
+    for miner_id in guard.miners.iter() {
+        let pinset = if let Some(miner) = self.miners.get(miner_id) {
+            miner.pinset
+        } else {
+            continue;
+        };
+
+        config += format!(" {} {}", miner_id, pinset).as_str();
+    }
+
+    return config;
 }
 
 }

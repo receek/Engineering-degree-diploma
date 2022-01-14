@@ -1,6 +1,9 @@
 use std::str::FromStr;
 
 use chrono::{NaiveDate, NaiveDateTime};
+use sscanf::const_format::__str_methods::StrIndexArgs;
+
+use std::collections::HashMap;
 
 use std::time::{Instant};
 
@@ -17,7 +20,7 @@ pub enum DeviceState {
 pub enum ShellyType {
     /* List can be extended in future */
     SHEM_3,
-    SHPLG_S
+    SHPLG_S,
 }
 
 impl FromStr for ShellyType {
@@ -72,6 +75,38 @@ pub struct Miner {
     pub power_consumption: Option<u32>, // Watts
 }
 
+#[derive(Debug)]
+pub enum MinerState {
+    NotDefined,
+    PoweredOff,
+    Starting,
+    Running,
+    Stopping,
+    HardStopping, 
+    Restarting,
+    HardRestarting,
+    Aborted,
+    Unreachable
+}
+
+impl FromStr for MinerState {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "NotDefined" => Ok(Self::NotDefined),
+            "PoweredOff" => Ok(Self::PoweredOff),
+            "Starting" => Ok(Self::Starting),
+            "Running" => Ok(Self::Running),
+            "Stopping" => Ok(Self::Stopping),
+            "HardStopping" => Ok(Self::HardStopping), 
+            "Restarting" => Ok(Self::Restarting),
+            "HardRestarting" => Ok(Self::HardRestarting),
+            "Aborted" => Ok(Self::Aborted),
+            "Unreachable" => Ok(Self::Unreachable),
+            _ => Err(String::from("Unimplemented miner state")) 
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Guard {
@@ -87,8 +122,9 @@ pub struct Switchboard {
     pub state: DeviceState,
 }
 
-/* Miner data for miner MQTT messages receiver loop */
+/* Miner data for miners MQTT messages receiver loop */
 
+#[derive(Debug)]
 pub struct MinerData {
     pub last_received: Option<Instant>,
     pub name: String,
@@ -99,8 +135,26 @@ pub struct MinerData {
 
 /* Energy data representation for channel */
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EnergyData {
-    Switchboard { ts: NaiveDateTime, ec: [u64; 3], er: [u64; 3], tc: [f64; 3], tr: [f64; 3] },
-    Miner { ts: NaiveDateTime, name: String, ec: u64, phase: u16, power: f32 },
+    Switchboard {ts: NaiveDateTime, ec: [u64; 3], er: [u64; 3], tc: [f64; 3], tr: [f64; 3]},
+    Miner {ts: NaiveDateTime, name: String, ec: u64, phase: u16, power: f32},
+}
+
+/* Data for main thread channel */
+#[derive(Debug)]
+pub enum GuardData {
+    Alert {miner_id: String, event: String},
+    Command {miner_id: String, status: String},
+    Configured,
+    Ping,
+    Started,
+    State {miner_id: String, state: MinerState},
+
+}
+
+#[derive(Debug)]
+pub enum Message {
+    Energy(EnergyData),
+    Guard {guard_id: String, ts: NaiveDateTime, data: GuardData},
 }
