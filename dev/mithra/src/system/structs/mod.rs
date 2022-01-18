@@ -1,3 +1,4 @@
+use std::process::Command;
 use std::str::FromStr;
 
 use chrono::{NaiveDate, NaiveDateTime};
@@ -7,13 +8,15 @@ use std::collections::HashMap;
 
 use std::time::{Instant};
 
+
+/* There is status enum for switchboard, guards and plugs */
 #[derive(Debug, PartialEq)]
 pub enum DeviceState {
-    Unknown,
+    NotDefined,
     Available,
     ConfigExpired,
+    StartingUp,
     Inaccessible,
-    Broken,
 }
 
 #[derive(Debug, PartialEq)]
@@ -63,7 +66,8 @@ pub struct Plug {
     pub id: String,
     pub state: DeviceState,
     pub miner_id: String,
-    // last seen
+    pub is_enabled: bool,
+    pub last_seen: NaiveDateTime,
 }
 
 #[derive(Debug)]
@@ -72,10 +76,14 @@ pub struct Miner {
     pub plug_id: String,
     pub guard: String,
     pub pinset: u32,
+    pub phase: u8,
+    pub estimated_consumption: u32,
     pub power_consumption: Option<u32>, // Watts
+    pub state: MinerState,
+    pub included: bool,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MinerState {
     NotDefined,
     PoweredOff,
@@ -108,18 +116,58 @@ impl FromStr for MinerState {
     }
 }
 
+impl ToString for MinerState {
+    fn to_string(&self) -> String {
+        String::from( match self {
+            Self::NotDefined =>  "NotDefined",
+            Self::PoweredOff =>  "PoweredOff",
+            Self::Starting =>  "Starting",
+            Self::Running =>  "Running",
+            Self::Stopping =>  "Stopping",
+            Self::HardStopping => "HardStopping",
+            Self::Restarting =>  "Restarting",
+            Self::HardRestarting =>  "HardRestarting",
+            Self::Aborted =>  "Aborted",
+            Self::Unreachable =>  "Unreachable",
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CommandStatus {
+    Disallowed,
+    Done,
+    Failed,
+    Busy,
+}
+
+impl FromStr for CommandStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "disallowed" => Ok(Self::Disallowed),
+            "done" => Ok(Self::Done),
+            "failed" => Ok(Self::Failed),
+            "busy" => Ok(Self::Busy),
+            _ => Err(String::from("Unimplemented command status")) 
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Guard {
     pub id: String,
     pub miners: Vec<String>,
     pub board_type: GuardType,
     pub state: DeviceState,
+    pub last_seen: NaiveDateTime,
 }
 
 #[derive(Debug)]
 pub struct Switchboard {
     pub id: String,
     pub state: DeviceState,
+    pub last_seen: NaiveDateTime,
 }
 
 /* Miner data for miners MQTT messages receiver loop */
@@ -129,8 +177,25 @@ pub struct MinerData {
     pub last_received: Option<Instant>,
     pub name: String,
     pub energy_consumed: u64,
-    pub phase: u16,
+    pub phase: u8,
     pub power: f32,
+}
+
+#[derive(Debug)]
+pub enum MinerAlert {
+    PoweredOn,
+    PoweredDown,
+}
+
+impl FromStr for MinerAlert {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "PoweredOn" => Ok(Self::PoweredOn),
+            "PoweredDown" => Ok(Self::PoweredDown),
+            _ => Err(String::from("Unimplemented miner alert")) 
+        }
+    }
 }
 
 /* Energy data representation for channel */
@@ -138,14 +203,14 @@ pub struct MinerData {
 #[derive(Debug, Clone)]
 pub enum EnergyData {
     Switchboard {ts: NaiveDateTime, ec: [u64; 3], er: [u64; 3], tc: [f64; 3], tr: [f64; 3]},
-    Miner {ts: NaiveDateTime, name: String, ec: u64, phase: u16, power: f32},
+    Miner {ts: NaiveDateTime, name: String, ec: u64, phase: u8, power: f32},
 }
 
 /* Data for main thread channel */
 #[derive(Debug)]
 pub enum GuardData {
-    Alert {miner_id: String, event: String},
-    Command {miner_id: String, status: String},
+    Alert {miner_id: String, alert: MinerAlert},
+    Command {miner_id: String, command_status: CommandStatus, miner_state: MinerState},
     Configured,
     Ping,
     Started,
@@ -154,7 +219,36 @@ pub enum GuardData {
 }
 
 #[derive(Debug)]
+pub enum UserCommands {
+    Exclude,
+    Include,
+}
+
+impl FromStr for UserCommands {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "exclude" => Ok(Self::Exclude),
+            "include" => Ok(Self::Include),
+            _ => Err(String::from("Unimplemented UserCommand")) 
+        }
+    }
+}
+
+impl ToString for UserCommands {
+    fn to_string(&self) -> String {
+        String::from( match self {
+            Self::Exclude => "Exclude",
+            Self::Include => "Include",
+        })
+    }
+}
+
+#[derive(Debug)]
 pub enum Message {
+    //ShellyAnnounce,
     Energy(EnergyData),
     Guard {guard_id: String, ts: NaiveDateTime, data: GuardData},
+    Plug {plug_id: String, ts: NaiveDateTime, is_on: bool},
+    User {miner_id: String, command: UserCommands},
 }

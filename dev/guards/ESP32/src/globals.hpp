@@ -33,8 +33,8 @@ static const timer_group_t TIMER_GROUP =  TIMER_GROUP_0;
 static const timer_idx_t TIMER_INDEX = TIMER_0;
 static const u32 TIMER_DIVIDER = 80;
 
-const char WIFI_SSID[] = "";
-const char WIFI_PASSWORD[] = "";
+const char WIFI_SSID[] = "NETIASPOT-2.4GHz-YC9V";
+const char WIFI_PASSWORD[] = "xXjgfYMt";
 
 const IPAddress IP_MQTT_BROKER(192, 168, 100, 5);
 const int PORT_MQTT_BROKER = 1883;

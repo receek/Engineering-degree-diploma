@@ -1,3 +1,4 @@
+use chrono::{NaiveDate, NaiveDateTime, naive::MIN_DATETIME};
 use clap::{Arg, ArgMatches, App, Error};
 use configparser::ini::Ini;
 use hostname_validator;
@@ -313,7 +314,8 @@ fn parse_yaml(conf: &Yaml)
 
     let switchboard = Switchboard {
         id: String::from(switchboard_id),
-        state: DeviceState::Unknown,
+        state: DeviceState::NotDefined,
+        last_seen: MIN_DATETIME,
     };
 
     let mut guards = HashMap::new();
@@ -354,7 +356,8 @@ fn parse_yaml(conf: &Yaml)
             id: String::from(guard_id),
             miners: Vec::new(),
             board_type: guard_type,
-            state: DeviceState::Unknown,
+            state: DeviceState::NotDefined,
+            last_seen: MIN_DATETIME,
         };
         /* Check all miners under this guard */
         for miner in miners_array {
@@ -389,6 +392,24 @@ fn parse_yaml(conf: &Yaml)
                 return None;
             };
 
+            let phase = if let Some(phase) = miner["phase"].as_i64() {
+                if phase < 0 || 2 < phase {
+                    return None;
+                }
+                phase as u8
+            } else {
+                return None;
+            };
+
+            let consumption = if let Some(consumption) = miner["consumption"].as_i64() {
+                if consumption < 0 {
+                    return None;
+                }
+                consumption as u32
+            } else {
+                return None;
+            };
+
             local_guard.miners.push(String::from(miner_id));
             miners.insert(
                 String::from(miner_id),
@@ -397,15 +418,22 @@ fn parse_yaml(conf: &Yaml)
                     guard: String::from(guard_id),
                     plug_id: String::from(plug_id),
                     pinset: miner_pinset as u32,
+                    phase: phase,
+                    estimated_consumption: consumption,
                     power_consumption: None,
+                    state: MinerState::NotDefined,
+                    //target_state: MinerState::NotDefined,
+                    included: true,
                 }    
             );
             plugs.insert(
                 String::from(plug_id),
                 Plug {
                     id: String::from(plug_id),
-                    state: DeviceState::Unknown,
+                    state: DeviceState::NotDefined,
                     miner_id: String::from(miner_id),
+                    is_enabled: true,
+                    last_seen: MIN_DATETIME,
                 }
             );
         }

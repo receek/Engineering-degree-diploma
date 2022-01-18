@@ -148,7 +148,7 @@ pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) 
                         &tr[0], &tr[1], &tr[2],
                     ]
                 ) {
-                    println!("Inserting switchboard row error: {}", error_msg);
+                    eprintln!("Inserting switchboard row error: {}", error_msg);
                 }
             },
             EnergyData::Miner{ts, name,  ec, phase, power} => {
@@ -159,7 +159,7 @@ pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) 
                 if let Err(error_msg)  = client.execute(&query,
                  &[&ts, &name, &(ec as i64), &(phase as i16), &power]
                 ) {
-                    println!("Inserting miner row error: {}", error_msg);
+                    eprintln!("Inserting miner row error: {}", error_msg);
                 }
             },
         }

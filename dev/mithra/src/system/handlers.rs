@@ -1,7 +1,7 @@
 use chrono::{NaiveDateTime, Utc};
 use rumqttc::{Client, Connection, Event, Packet, Outgoing};
 use sscanf::scanf;
-use std::collections::{HashMap};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Result;
 use std::str::FromStr;
 use std::sync::mpsc::{self, Sender, Receiver};
@@ -103,21 +103,21 @@ pub fn switchboard_loop(mut connection: Connection, tx_db: Sender<structs::Energ
     println!("Switchboard MQTT messages receiver exits. Connection is disconnected by client.");
 }
 
-pub fn miners_loop(mut connection: Connection, mut miners: HashMap<String, structs::MinerData>, tx_db: Sender<structs::EnergyData>, tx_main: Sender<structs::Message>) {
+pub fn plugs_loop(mut connection: Connection, mut miners: HashMap<String, structs::MinerData>, tx_db: Sender<structs::EnergyData>, tx_main: Sender<structs::Message>) {
     let interval = Duration::from_secs(90);
 
     for msg in connection.iter() {
         //println!("Miner loop msg got.");
         match msg {
             Ok(Event::Incoming(Packet::Publish(data))) => {
-                let (plug_id, data_type) = scanf!(data.topic ,"shellies/{}/relay/0/{}", String, String).unwrap();
+                let (plug_id, data_type) = scanf!(data.topic ,"shellies/{}/relay/{}", String, String).unwrap();
                 let payload = std::str::from_utf8(&data.payload).unwrap();
 
                 let mut miner = miners.get_mut(&plug_id).unwrap();
                 let now = Instant::now();
 
                 match data_type.as_str() {
-                    "power" => {
+                    "0/power" => {
                         let power_now = payload.parse::<f32>().unwrap();
                         if let Some(last) = miner.last_received {
                             if last + interval > now {
@@ -129,7 +129,7 @@ pub fn miners_loop(mut connection: Connection, mut miners: HashMap<String, struc
                             miner.power = power_now
                         }
                     },
-                    "energy" => {
+                    "0/energy" => {
                         let consumed_now = payload.parse::<u64>().unwrap();
                         
                         if let Some(last) = miner.last_received {
@@ -143,10 +143,10 @@ pub fn miners_loop(mut connection: Connection, mut miners: HashMap<String, struc
                                 };
 
                                 if let Err(_) = tx_db.send(msg.clone()) {
-                                    eprintln!("Miners loop - database channel is closed!")
+                                    eprintln!("Plugs loop - database channel is closed!")
                                 }
-                                if let Err(_) = tx_db.send(msg) {
-                                    eprintln!("Miners loop - main thread channel is closed!")
+                                if let Err(_) = tx_main.send(structs::Message::Energy(msg)) {
+                                    eprintln!("Plugs loop - main thread channel is closed!")
                                 }
                             }
                         }
@@ -154,6 +154,20 @@ pub fn miners_loop(mut connection: Connection, mut miners: HashMap<String, struc
                         miner.energy_consumed = consumed_now;
                         miner.last_received = Some(now);
                     },
+                    "0" => { 
+                        let is_on = match payload {
+                            "on" => true,
+                            "off" => false,
+                            _ => continue
+                        };
+                        if let Err(_) = tx_main.send(structs::Message::Plug{
+                            plug_id,
+                            ts: Utc::now().naive_utc(),
+                            is_on}
+                        ) {
+                            eprintln!("Plugs loop - database channel is closed!")
+                        }
+                    }
                     _ => {},
                 }
             },
@@ -170,7 +184,7 @@ pub fn miners_loop(mut connection: Connection, mut miners: HashMap<String, struc
 }
 
 pub fn guards_loop(mut connection: Connection, tx: Sender<structs::Message>) {
-    use super::structs::{Message, GuardData};
+    use super::structs::{CommandStatus, GuardData, Message, MinerAlert};
 
     for msg in connection.iter() { match msg {
             Ok(Event::Incoming(Packet::Publish(data))) => {
@@ -188,7 +202,7 @@ pub fn guards_loop(mut connection: Connection, tx: Sender<structs::Message>) {
                 );
                 let topic3 = scanf!(
                     data.topic,
-                    "guards/{/[^/]+/}/miner/{/[^/]+/}/{/[^/]+/}",
+                    "guards/{/[^/]+/}/miners/{/[^/]+/}/{/[^/]+/}",
                     String, String, String
                 );
 
@@ -229,22 +243,29 @@ pub fn guards_loop(mut connection: Connection, tx: Sender<structs::Message>) {
                 if let Some((guard_id, miner_id, subtopic)) = topic3 {
                     match subtopic.as_str() {
                         "alert" => {
+                            let alert = MinerAlert::from_str(payload).unwrap();
                             msg = Some( Message::Guard{
                                 guard_id,
                                 ts,
                                 data: GuardData::Alert{
                                     miner_id,
-                                    event: String::from(payload)
+                                    alert,
                                 }
                             });
                         },
                         "command" => {
+                            let (command_status, miner_state) = scanf!(
+                                payload,
+                                "command={}, state={}",
+                                String, String
+                            ).unwrap();
                             msg = Some( Message::Guard{
                                 guard_id,
                                 ts,
                                 data: GuardData::Command{
                                     miner_id,
-                                    status: String::from(payload)
+                                    command_status: CommandStatus::from_str(command_status.as_str()).unwrap(),
+                                    miner_state: MinerState::from_str(miner_state.as_str()).unwrap(),
                                 }
                             });
                         },
@@ -268,7 +289,7 @@ pub fn guards_loop(mut connection: Connection, tx: Sender<structs::Message>) {
                     }
                 } else {
                     /* No message, topic is wrong */
-                    eprintln!("Guard loop: received message from unspecified topic!");
+                    eprintln!("Guard loop: received message from unspecified topic: {} {}", data.topic, payload);
                 }
             },
             Ok(Event::Outgoing(Outgoing::Disconnect)) => {
@@ -283,4 +304,51 @@ pub fn guards_loop(mut connection: Connection, tx: Sender<structs::Message>) {
     }
 
     println!("Guards MQTT messages receiver exits. Connection is disconnected by client.");
+}
+
+pub fn user_loop(mut connection: Connection, tx: Sender<structs::Message>) {
+    use super::structs::{UserCommands, Message};
+
+    for msg in connection.iter() { match msg {
+            Ok(Event::Incoming(Packet::Publish(data))) => {
+                let payload = std::str::from_utf8(&data.payload).unwrap();
+
+                let miner_id = if let Some(miner_id) = scanf!(
+                    data.topic,
+                    "user/{/[^/]+/}",
+                    String
+                ) {
+                    miner_id
+                } else {
+                    eprintln!("User loop - wrong topic: {}", data.topic);
+                    continue;
+                };
+
+                let command = if let Ok(command) = UserCommands::from_str(payload) {
+                    command
+                } else {
+                    eprintln!("User loop - undefined user command: {}", miner_id);
+                    continue;
+                };
+
+                if let Err(_) = tx.send(Message::User{
+                    miner_id,
+                    command,
+                }) {
+                    eprintln!("User loop - main thread channel is closed!");
+                    continue;
+                }
+            }
+            Ok(Event::Outgoing(Outgoing::Disconnect)) => {
+                /* Mithra is terminating */
+                drop(tx);
+                break;
+            }
+            Ok(_) => (), 
+            Err(_) => (),
+        }
+        
+    }
+
+    println!("User MQTT messages receiver exits. Connection is disconnected by client.");
 }

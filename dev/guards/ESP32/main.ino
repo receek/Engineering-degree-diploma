@@ -16,6 +16,8 @@ static MQTTClient client;
 static Miner miners[MAX_MINERS];
 static i32 minersCount = -1;
 
+static char response[128];
+
 TimerWrapper& timer = getTimerInstance();
 u64 timestamp = 0;
 u64 pingTimestamp = 0;
@@ -62,7 +64,9 @@ void applyConfig() {
     Miner::client = &client;
 
     /* Subscribe miner control topics */
-    client.subscribe(GUARD_PREFIX_TOPIC + "miners/+");
+    for(int i = 0; i < minersCount; i++) {
+        client.subscribe(GUARD_PREFIX_TOPIC + "miners/" + miners[i].id);
+    }
     client.subscribe(GUARD_PREFIX_TOPIC + "command");
     client.subscribe(GUARD_COMMAND_TOPIC);
 }
@@ -123,6 +127,7 @@ void startUpMessageReceiver(String &topic, String &payload) {
 
 void controlMessageReceiver(String &topic, String &payload) {
     Serial.println("incoming: " + topic + " = " + payload);
+    Serial.flush();
 
     if (topic.startsWith(GUARD_PREFIX_TOPIC)) {
         String subtopic = topic.substring(GUARD_PREFIX_TOPIC.length());
@@ -143,7 +148,8 @@ void controlMessageReceiver(String &topic, String &payload) {
 
             if (command == Command::NotDefined) {
                 /* Undefined command received */
-                client.publish(miners[id].commandTopic, "UNDEFINED");
+                sprintf(response, "command=UNDEFINED, state=%s", miners[id].state);
+                client.publish(miners[id].commandTopic, response);
                 return;
             } else if (command == Command::StateReport) {
                 /* Set flag */
@@ -151,7 +157,8 @@ void controlMessageReceiver(String &topic, String &payload) {
                 return;
             } else if (miners[id].command != Command::Idle) {
                 /* Miner should be in idle command mode */
-                client.publish(topic, "BUSY");
+                sprintf(response, "command=BUSY, state=%s", miners[id].state);
+                client.publish(topic + "/command", response);
                 return;
             }
 
@@ -235,7 +242,6 @@ void runGuardPing() {
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("dupa");
     Serial.flush();
 
     /* WiFi configuring */
@@ -325,7 +331,7 @@ void loop() {
         timestamp = timer.getTimestamp();
     }
 
-    if (timer.isTimeElapsed(pingTimestamp, 60000)) {
+    if (timer.isTimeElapsed(pingTimestamp, 30000)) {
         runGuardPing();
         pingTimestamp = timer.getTimestamp();
     }
