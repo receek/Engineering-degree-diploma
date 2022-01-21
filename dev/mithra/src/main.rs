@@ -1,3 +1,6 @@
+#![feature(deadline_api)]
+#![feature(thread_is_running)]
+
 use chrono::{NaiveDate, NaiveDateTime, naive::MIN_DATETIME};
 use clap::{Arg, ArgMatches, App, Error};
 use configparser::ini::Ini;
@@ -71,10 +74,7 @@ fn main() {
         eprintln!("{}", error_msg);
         std::process::exit(1);
     }
-
-    /* Initialize all system devices */
-    system.init();
-    system.run();
+        system.run();
 }
 
 fn get_cli_parameters() -> Result<ArgMatches<'static>, Error> {
@@ -314,7 +314,7 @@ fn parse_yaml(conf: &Yaml)
 
     let switchboard = Switchboard {
         id: String::from(switchboard_id),
-        state: DeviceState::NotDefined,
+        state: DeviceState::Inaccessible,
         last_seen: MIN_DATETIME,
     };
 
@@ -356,7 +356,7 @@ fn parse_yaml(conf: &Yaml)
             id: String::from(guard_id),
             miners: Vec::new(),
             board_type: guard_type,
-            state: DeviceState::NotDefined,
+            state: DeviceState::Inaccessible,
             last_seen: MIN_DATETIME,
         };
         /* Check all miners under this guard */
@@ -419,10 +419,11 @@ fn parse_yaml(conf: &Yaml)
                     plug_id: String::from(plug_id),
                     pinset: miner_pinset as u32,
                     phase: phase,
-                    estimated_consumption: consumption,
+                    estimated_consumption: consumption as f32,
                     power_consumption: None,
                     state: MinerState::NotDefined,
-                    //target_state: MinerState::NotDefined,
+                    target_state: None,
+                    command_ts: None,
                     included: true,
                 }    
             );
@@ -430,7 +431,7 @@ fn parse_yaml(conf: &Yaml)
                 String::from(plug_id),
                 Plug {
                     id: String::from(plug_id),
-                    state: DeviceState::NotDefined,
+                    state: DeviceState::Inaccessible,
                     miner_id: String::from(miner_id),
                     is_enabled: true,
                     last_seen: MIN_DATETIME,

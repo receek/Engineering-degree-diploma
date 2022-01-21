@@ -12,11 +12,11 @@ use std::time::{Instant};
 /* There is status enum for switchboard, guards and plugs */
 #[derive(Debug, PartialEq)]
 pub enum DeviceState {
-    NotDefined,
+    //NotDefined,
     Available,
     ConfigExpired,
-    StartingUp,
     Inaccessible,
+    StartingUp,
 }
 
 #[derive(Debug, PartialEq)]
@@ -77,9 +77,11 @@ pub struct Miner {
     pub guard: String,
     pub pinset: u32,
     pub phase: u8,
-    pub estimated_consumption: u32,
-    pub power_consumption: Option<u32>, // Watts
+    pub estimated_consumption: f32,
+    pub power_consumption: Option<f32>, // Watts
     pub state: MinerState,
+    pub target_state: Option<MinerState>,
+    pub command_ts: Option<NaiveDateTime>,
     pub included: bool,
 }
 
@@ -184,7 +186,7 @@ pub struct MinerData {
 #[derive(Debug)]
 pub enum MinerAlert {
     PoweredOn,
-    PoweredDown,
+    PoweredOff,
 }
 
 impl FromStr for MinerAlert {
@@ -192,7 +194,7 @@ impl FromStr for MinerAlert {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "PoweredOn" => Ok(Self::PoweredOn),
-            "PoweredDown" => Ok(Self::PoweredDown),
+            "PoweredOff" => Ok(Self::PoweredOff),
             _ => Err(String::from("Unimplemented miner alert")) 
         }
     }

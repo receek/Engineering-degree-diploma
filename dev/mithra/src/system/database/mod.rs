@@ -127,7 +127,7 @@ pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) 
     let mut client = match db_config.connect(NoTls) {
         Ok(conn) => conn,
         Err(error) => {
-            eprintln!("Database test connection: {}", error.to_string());
+            eprintln!("Database thread connection error: {}", error.to_string());
             std::process::exit(1)
         },
     };
@@ -165,5 +165,5 @@ pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) 
         }
     }
 
-    println!("Inserting energy data into database thread is exiting, channel is closed");
+    println!("Database thread is exiting, channel is closed");
 }
