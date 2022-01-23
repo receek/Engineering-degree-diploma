@@ -8,7 +8,7 @@
 #include "utils.hpp"
 
 enum class State {
-    NotDefined = 0,
+    Undefined = 0,
     PoweredOff = 1,
     Starting = 2,
     Running = 3,
@@ -23,7 +23,7 @@ enum class State {
 const char * getStateName(State);
 
 enum class Command {
-    NotDefined = 0,
+    Undefined = 0,
     Idle,
     PowerOn,
     PowerOff,

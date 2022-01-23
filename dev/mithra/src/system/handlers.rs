@@ -1,17 +1,25 @@
-use chrono::{NaiveDateTime, Utc};
-use rumqttc::{Client, Connection, Event, Packet, Outgoing};
+use chrono::Utc;
+use rumqttc::{Connection, Event, Packet, Outgoing};
 use sscanf::scanf;
-use std::collections::{HashMap, HashSet};
-use std::fmt::Result;
-use std::str::FromStr;
-use std::sync::mpsc::{self, Sender, Receiver};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::mpsc::Sender,
+    time::{Duration, Instant},
+};
 
-use crate::system::structs::{GuardType, MinerState};
+use super::structs::{
+    CommandStatus,
+    EnergyData,
+    GuardData,
+    Message,
+    MinerAlert,
+    MinerData,
+    MinerState,
+    UserCommands,
+};
 
-use super::structs;
-
-pub fn switchboard_loop(mut connection: Connection, tx_db: Sender<structs::EnergyData>, tx_main: Sender<structs::Message>) {
+pub fn switchboard_loop(mut connection: Connection, tx_db: Sender<EnergyData>, tx_main: Sender<Message>) {
     fn is_collected<T>(array: &[Option<T>; 3]) -> bool {
         array.iter().all(|x: &Option<T>| x.is_some())
     }
@@ -90,7 +98,7 @@ pub fn switchboard_loop(mut connection: Connection, tx_db: Sender<structs::Energ
         } else {
             /* Send data to database and to main thread by channel */
             
-            let msg = structs::EnergyData::Switchboard{
+            let msg = EnergyData::Switchboard{
                 ts: Utc::now().naive_utc(),
                 ec: [energy_consumed_wmin[0].unwrap(), energy_consumed_wmin[1].unwrap(), energy_consumed_wmin[2].unwrap()],
                 er: [energy_returned_wmin[0].unwrap(), energy_returned_wmin[1].unwrap(), energy_returned_wmin[2].unwrap()],
@@ -103,7 +111,7 @@ pub fn switchboard_loop(mut connection: Connection, tx_db: Sender<structs::Energ
                 break;
             }
 
-            if let Err(_) = tx_main.send(structs::Message::Energy(msg)) {
+            if let Err(_) = tx_main.send(Message::Energy(msg)) {
                 println!("[Switchboard loop] Main thread channel is closed!");
                 drop(tx_db);
                 break;
@@ -122,7 +130,7 @@ pub fn switchboard_loop(mut connection: Connection, tx_db: Sender<structs::Energ
     println!("Switchboard MQTT messages receiver exits.");
 }
 
-pub fn plugs_loop(mut connection: Connection, mut miners: HashMap<String, structs::MinerData>, tx_db: Sender<structs::EnergyData>, tx_main: Sender<structs::Message>) {
+pub fn plugs_loop(mut connection: Connection, mut miners: HashMap<String, MinerData>, tx_db: Sender<EnergyData>, tx_main: Sender<Message>) {
     let interval = Duration::from_secs(90);
 
     for msg in connection.iter() {
@@ -163,8 +171,8 @@ pub fn plugs_loop(mut connection: Connection, mut miners: HashMap<String, struct
                         let consumed_now = payload.parse::<u64>().unwrap();
                         
                         if let Some(last) = miner.last_received {
-                            if last + interval > now && miner.energy_consumed < consumed_now {
-                                let msg = structs::EnergyData::Miner{
+                            if last + interval > now && miner.energy_consumed + 5 < consumed_now {
+                                let msg = EnergyData::Miner{
                                     ts: Utc::now().naive_utc(),
                                     name: miner.name.clone(),
                                     ec: consumed_now - miner.energy_consumed,
@@ -176,7 +184,7 @@ pub fn plugs_loop(mut connection: Connection, mut miners: HashMap<String, struct
                                     eprintln!("[Plugs loop] Database channel is closed!");
                                     break;
                                 }
-                                if let Err(_) = tx_main.send(structs::Message::Energy(msg)) {
+                                if let Err(_) = tx_main.send(Message::Energy(msg)) {
                                     println!("[Plugs loop] Main thread channel is closed!");
                                     drop(tx_db);
                                     break;
@@ -193,7 +201,7 @@ pub fn plugs_loop(mut connection: Connection, mut miners: HashMap<String, struct
                             "off" => false,
                             _ => continue
                         };
-                        if let Err(_) = tx_main.send(structs::Message::Plug{
+                        if let Err(_) = tx_main.send(Message::Plug{
                             plug_id,
                             ts: Utc::now().naive_utc(),
                             is_on
@@ -219,8 +227,7 @@ pub fn plugs_loop(mut connection: Connection, mut miners: HashMap<String, struct
     println!("Plugs MQTT messages receiver exits.");
 }
 
-pub fn guards_loop(mut connection: Connection, tx: Sender<structs::Message>) {
-    use super::structs::{CommandStatus, GuardData, Message, MinerAlert};
+pub fn guards_loop(mut connection: Connection, tx: Sender<Message>) {
 
     for msg in connection.iter() { match msg {
             Ok(Event::Incoming(Packet::Publish(data))) => {
@@ -342,9 +349,7 @@ pub fn guards_loop(mut connection: Connection, tx: Sender<structs::Message>) {
     println!("Guards MQTT messages receiver exits.");
 }
 
-pub fn user_loop(mut connection: Connection, tx: Sender<structs::Message>) {
-    use super::structs::{UserCommands, Message};
-
+pub fn user_loop(mut connection: Connection, tx: Sender<Message>) {
     for msg in connection.iter() { match msg {
             Ok(Event::Incoming(Packet::Publish(data))) => {
                 let payload = std::str::from_utf8(&data.payload).unwrap();

@@ -1,24 +1,19 @@
-use std::process::Command;
-use std::str::FromStr;
-
-use chrono::{NaiveDate, NaiveDateTime};
-use sscanf::const_format::__str_methods::StrIndexArgs;
-
-use std::collections::HashMap;
-
-use std::time::{Instant};
-
+use chrono::NaiveDateTime;
+use std::{
+    str::FromStr,
+    time::Instant,
+};
 
 /* There is status enum for switchboard, guards and plugs */
 #[derive(Debug, PartialEq)]
 pub enum DeviceState {
-    //NotDefined,
     Available,
     ConfigExpired,
     Inaccessible,
     StartingUp,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq)]
 pub enum ShellyType {
     /* List can be extended in future */
@@ -87,7 +82,7 @@ pub struct Miner {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MinerState {
-    NotDefined,
+    Undefined,
     PoweredOff,
     Starting,
     Running,
@@ -103,7 +98,7 @@ impl FromStr for MinerState {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "NotDefined" => Ok(Self::NotDefined),
+            "Undefined" => Ok(Self::Undefined),
             "PoweredOff" => Ok(Self::PoweredOff),
             "Starting" => Ok(Self::Starting),
             "Running" => Ok(Self::Running),
@@ -115,23 +110,6 @@ impl FromStr for MinerState {
             "Unreachable" => Ok(Self::Unreachable),
             _ => Err(String::from("Unimplemented miner state")) 
         }
-    }
-}
-
-impl ToString for MinerState {
-    fn to_string(&self) -> String {
-        String::from( match self {
-            Self::NotDefined =>  "NotDefined",
-            Self::PoweredOff =>  "PoweredOff",
-            Self::Starting =>  "Starting",
-            Self::Running =>  "Running",
-            Self::Stopping =>  "Stopping",
-            Self::HardStopping => "HardStopping",
-            Self::Restarting =>  "Restarting",
-            Self::HardRestarting =>  "HardRestarting",
-            Self::Aborted =>  "Aborted",
-            Self::Unreachable =>  "Unreachable",
-        })
     }
 }
 
@@ -200,12 +178,13 @@ impl FromStr for MinerAlert {
     }
 }
 
-/* Energy data representation for channel */
+/* Energy data representation for channels */
 
 #[derive(Debug, Clone)]
 pub enum EnergyData {
     Switchboard {ts: NaiveDateTime, ec: [u64; 3], er: [u64; 3], tc: [f64; 3], tr: [f64; 3]},
     Miner {ts: NaiveDateTime, name: String, ec: u64, phase: u8, power: f32},
+    MinersGrid {ts: NaiveDateTime, ec: u64, phase: u8}
 }
 
 /* Data for main thread channel */
@@ -237,18 +216,8 @@ impl FromStr for UserCommands {
     }
 }
 
-impl ToString for UserCommands {
-    fn to_string(&self) -> String {
-        String::from( match self {
-            Self::Exclude => "Exclude",
-            Self::Include => "Include",
-        })
-    }
-}
-
 #[derive(Debug)]
 pub enum Message {
-    //ShellyAnnounce,
     Energy(EnergyData),
     Guard {guard_id: String, ts: NaiveDateTime, data: GuardData},
     Plug {plug_id: String, ts: NaiveDateTime, is_on: bool},

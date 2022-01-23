@@ -1,10 +1,11 @@
 
 use chrono::{NaiveDate, NaiveDateTime, Utc, Datelike};
-use postgres::{Client, Config, Error, NoTls, GenericClient};
-use std::collections::{HashSet};
-use std::sync::mpsc::{self, Sender, Receiver};
+use postgres::{Client, Config, NoTls};
+use std::collections::HashSet;
+use std::sync::mpsc::Receiver;
+
 mod queries;
-use super::structs;
+use super::structs::EnergyData;
 
 
 fn next_month(date: NaiveDateTime) -> NaiveDateTime {
@@ -18,7 +19,6 @@ fn next_month(date: NaiveDateTime) -> NaiveDateTime {
 }
 
 pub fn check_db_schema(client: &mut Client, (period_start, period_end): (NaiveDateTime, NaiveDateTime)) {
-    println!("Get db schema, and check all tables for contract billing period");
     let mut tables = HashSet::new();
 
     let rows = client.query(queries::GET_ALL_TABLES, &[]).unwrap_or_else(|error_msg| {
@@ -31,7 +31,7 @@ pub fn check_db_schema(client: &mut Client, (period_start, period_end): (NaiveDa
         tables.insert(table);
     }
 
-    println!("Got db schema, start checking tables for every month");
+    println!("Got database schema, start checking tables for every month.");
 
     let mut month = period_start;
 
@@ -43,7 +43,7 @@ pub fn check_db_schema(client: &mut Client, (period_start, period_end): (NaiveDa
                 eprintln!("{}", error_msg);
                 std::process::exit(1);
             });
-            println!("{} created", table);
+            println!("Missing table '{}', created.", table);
         }
 
         let table = format!("miners_{}_{:02}", month.year(), month.month());
@@ -53,10 +53,20 @@ pub fn check_db_schema(client: &mut Client, (period_start, period_end): (NaiveDa
                 eprintln!("{}", error_msg);
                 std::process::exit(1);
             });
-            println!("{} created", table);
+            println!("Missing table '{}', created.", table);
         }
 
-        println!("{} checked at all", month);
+        let table = format!("miners_grid_{}_{:02}", month.year(), month.month());
+        if let None = tables.get(&table) {
+            let query = queries::create_miner_grid_table(month.year(), month.month());
+            client.execute(&query, &[]).unwrap_or_else(|error_msg| {
+                eprintln!("{}", error_msg);
+                std::process::exit(1);
+            });
+            println!("Missing table '{}', created.", table);
+        }
+
+        println!("{} checked.", month);
         month = next_month(month);
     }
 }
@@ -118,11 +128,35 @@ pub fn get_miners_consumption(client: &mut Client, period_start: NaiveDateTime) 
         month = next_month(month);
     }
     return consumption;
-    
 }
 
-pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) {
-    use super::structs::EnergyData;
+pub fn get_miners_grid_consumption(client: &mut Client, period_start: NaiveDateTime) -> [u64; 3] {
+    let mut month = period_start;
+    let now = Utc::now().naive_utc();
+    let mut consumption = [0; 3];
+
+
+    while month <= now {
+        for phase in 0..3 {
+            let query = queries::get_month_miner_grid_consumption(month.year(), month.month(), phase);
+            let result = client.query(&query, &[]).unwrap_or_else(|error_msg| {
+                eprintln!("{}", error_msg);
+                std::process::exit(1);
+            });
+
+            if let Some(row) = result.first() {
+                let month_sum: i64 = row.get("sum");
+                consumption[phase as usize] += month_sum as u64;
+            }
+        }
+        
+
+        month = next_month(month);
+    }
+    return consumption;
+}
+
+pub fn insert_energy_data_loop(db_config: Config, rx: Receiver<EnergyData>) {
 
     let mut client = match db_config.connect(NoTls) {
         Ok(conn) => conn,
@@ -135,7 +169,6 @@ pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) 
     while let Ok(item) = rx.recv() {
         match item {
             EnergyData::Switchboard{ts, ec, er, tc, tr} => {
-                println!("DB energy thread: received switchboard data from channel.");
                 let query = queries::insert_switchboard_row(ts.year(), ts.month());
 
                 if let Err(error_msg)  = client.execute(
@@ -152,8 +185,6 @@ pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) 
                 }
             },
             EnergyData::Miner{ts, name,  ec, phase, power} => {
-                println!("DB energy thread: received miner data from channel.");
-
                 let query = queries::insert_miners_row(ts.year(), ts.month());
 
                 if let Err(error_msg)  = client.execute(&query,
@@ -162,8 +193,17 @@ pub fn insert_energy_data(db_config: Config, rx: Receiver<structs::EnergyData>) 
                     eprintln!("Inserting miner row error: {}", error_msg);
                 }
             },
+            EnergyData::MinersGrid{ts,  ec, phase} => {
+                let query = queries::insert_miners_grid_row(ts.year(), ts.month());
+
+                if let Err(error_msg)  = client.execute(&query,
+                 &[&ts, &(ec as i64), &(phase as i16)]
+                ) {
+                    eprintln!("Inserting miner row error: {}", error_msg);
+                }
+            },
         }
     }
 
-    println!("Database thread is exiting, channel is closed");
+    println!("Database thread is exiting.");
 }

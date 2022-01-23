@@ -1,22 +1,27 @@
 #![feature(deadline_api)]
 #![feature(thread_is_running)]
 
-use chrono::{NaiveDate, NaiveDateTime, naive::MIN_DATETIME};
+use chrono::naive::MIN_DATETIME;
 use clap::{Arg, ArgMatches, App, Error};
 use configparser::ini::Ini;
 use hostname_validator;
-use postgres::{Config, NoTls};
-//use r2d2::ManageConnection;
-use rumqttc::{Client, MqttOptions};
-use std::{collections::{HashSet, HashMap}, str::FromStr};
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
+use postgres::Config;
+use std::{
+    collections::{HashSet, HashMap},
+    fs::File,
+    io::Read,
+    path::Path,
+    str::FromStr
+};
 use yaml_rust::{Yaml, YamlLoader};
 
 mod system;
-use system::*;
-use system::structs::*;
+use system::{
+    MqttConfig,
+    System,
+    structs::*
+
+};
 
 
 fn main() {
@@ -26,55 +31,59 @@ fn main() {
 
     let servers_file = params.value_of("servers").unwrap();
     let config_file = params.value_of("config").unwrap();
+
+    loop {
+        let mut servers_config = Ini::new();
+        servers_config.load(servers_file).unwrap_or_else(|error_msg| {
+            eprintln!("{}", error_msg);
+            std::process::exit(1);
+        });
+        
+        let (start_year,start_month,billing_period, recovery_ratio) = get_contract_data(&servers_config).unwrap_or_else(|error_msg| {
+            eprintln!("{}", error_msg);
+            std::process::exit(1);
+        });
     
-    let mut servers_config = Ini::new();
-    servers_config.load(servers_file).unwrap_or_else(|error_msg| {
-        eprintln!("{}", error_msg);
-        std::process::exit(1);
-    });
+        let db_config = get_db_config(&servers_config).unwrap_or_else(|error_msg| {
+            eprintln!("{}", error_msg);
+            std::process::exit(1);
+        });
     
-    let (start_year,start_month,billing_period, recovery_ratio) = get_contract_data(&servers_config).unwrap_or_else(|error_msg| {
-        eprintln!("{}", error_msg);
-        std::process::exit(1);
-    });
-
-    let db_config = get_db_config(&servers_config).unwrap_or_else(|error_msg| {
-        eprintln!("{}", error_msg);
-        std::process::exit(1);
-    });
-
-    let mqtt_config = get_mqtt_config(&servers_config).unwrap_or_else(|error_msg| {
-        eprintln!("{}", error_msg);
-        std::process::exit(1);
-    });
-
-    let (switchboard, guards, miners, plugs) = match load_yaml_config(config_file) {
-        Ok(devices) => devices,
-        Err(error_msg) => {
+        let mqtt_config = get_mqtt_config(&servers_config).unwrap_or_else(|error_msg| {
+            eprintln!("{}", error_msg);
+            std::process::exit(1);
+        });
+    
+        let (switchboard, guards, miners, plugs) = match load_yaml_config(config_file) {
+            Ok(devices) => devices,
+            Err(error_msg) => {
+                eprintln!("{}", error_msg);
+                std::process::exit(1);
+            }
+        };
+    
+        let mut system = System {
+            start_year,
+            start_month,
+            billing_period,
+            recovery_ratio,
+            db_config,
+            mqtt_config,
+            switchboard,
+            guards,
+            miners,
+            plugs, 
+        };
+    
+        /* Try to connect with database */
+        if let Err(error_msg) = system.check_servers_connection() {
             eprintln!("{}", error_msg);
             std::process::exit(1);
         }
-    };
-
-    let mut system = System {
-        start_year,
-        start_month,
-        billing_period,
-        recovery_ratio,
-        db_config,
-        mqtt_config,
-        switchboard,
-        guards,
-        miners,
-        plugs, 
-    };
-
-    /* Try to connect with database */
-    if let Err(error_msg) = system.check_servers_connection() {
-        eprintln!("{}", error_msg);
-        std::process::exit(1);
-    }
+        
         system.run();
+    }
+    
 }
 
 fn get_cli_parameters() -> Result<ArgMatches<'static>, Error> {
@@ -421,7 +430,7 @@ fn parse_yaml(conf: &Yaml)
                     phase: phase,
                     estimated_consumption: consumption as f32,
                     power_consumption: None,
-                    state: MinerState::NotDefined,
+                    state: MinerState::Undefined,
                     target_state: None,
                     command_ts: None,
                     included: true,

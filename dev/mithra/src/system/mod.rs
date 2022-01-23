@@ -1,23 +1,26 @@
 use chrono::{NaiveDate, NaiveDateTime, Utc, Datelike};
-
 use json::JsonValue;
-
 use postgres::{Config, NoTls};
-
-use rumqttc::{Client, Event, MqttOptions, Outgoing, Packet, Publish, QoS, Connection};
-
+use rumqttc::{
+    Client,
+    Event,
+    MqttOptions,
+    Outgoing,
+    Packet,
+    Publish,
+    QoS
+};
 use sscanf::scanf;
-
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
-use std::time::{Duration, Instant};
-use std::sync::mpsc::{self, Sender, Receiver};
-use std::thread::{self, JoinHandle};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    time::{Duration, Instant},
+    sync::mpsc,
+    thread,
+};
 
 mod database;
-
 mod handlers;
-
 pub mod structs;
 use structs::*;
 
@@ -84,18 +87,19 @@ fn init(&mut self) ->
 (
     (NaiveDateTime, NaiveDateTime),
     ([f64; 3], [f64; 3]),
+    [u64; 3],
     [u64; 3]
 ) {
     let mut mqtt_options = self.get_mqtt_options("Announce_loop");
     mqtt_options.set_keep_alive(5);
 
     let (mut client, mut connection) = Client::new(mqtt_options, 1024);
-    client.subscribe("shellies/announce", QoS::AtMostOnce).unwrap();
-    client.subscribe("guards/announce", QoS::AtMostOnce).unwrap();
+    client.subscribe("shellies/announce", QoS::ExactlyOnce).unwrap();
+    client.subscribe("guards/announce", QoS::ExactlyOnce).unwrap();
 
     if let Err(error_msg) = client.publish(
         "shellies/command",
-        QoS::AtMostOnce,
+        QoS::ExactlyOnce,
         false,
         "announce".as_bytes()
     ) {
@@ -105,7 +109,7 @@ fn init(&mut self) ->
 
     if let Err(error_msg) = client.publish(
         "guards/command",
-        QoS::AtMostOnce,
+        QoS::ExactlyOnce,
         false,
         "announce".as_bytes()
     ) {
@@ -146,9 +150,9 @@ fn init(&mut self) ->
         },
     };
 
-    /* Check database schema and create needed tables eventually */
+    /* Check database schema and create required tables eventually */
     let period = current_biling_period(self.start_year as i32, self.start_month, self.billing_period);
-    println!("Checking period from {:?} to {:?}", period.0, period.1);
+    println!("Checking database tables for period from {:?} to {:?}", period.0, period.1);
     database::check_db_schema(&mut db_client, period);
 
     /* Obtaining power state of switchboard */
@@ -156,23 +160,29 @@ fn init(&mut self) ->
         println!("Switchboard data obtained from database.");
         params
     } else {
+        let params = self.get_switchboard_data();
         println!("Switchboard data obtained from MQTT server.");
-        self.get_switchboard_data()
+        params
     };
 
     /* Obtaining energy consumed by miners */
     let miners_consumption = database::get_miners_consumption(&mut db_client, period.0);
-    println!("Miners have consumed {:?} watt-minute until now.", miners_consumption);
+    println!("Miners have consumed {:?} Wmin until now.", miners_consumption);
 
-    return (period, switchboard_params, miners_consumption)
+    let miners_grid_consumption = database::get_miners_grid_consumption(&mut db_client, period.0);
+    println!("Miners have consumed {:?} Wmin from grid until now.", miners_grid_consumption);
+
+    return (period, switchboard_params, miners_consumption, miners_grid_consumption);
 }
 
+#[allow(non_snake_case)]
 pub fn run(&mut self) {
     /* Initialize system */
     let (
-        period,
-        (mut start_consumed_kWh, mut start_returned_kWh),
-        mut miners_consumed_Wmin
+        billing_period,
+        (start_consumed_kWh, start_returned_kWh),
+        mut miners_consumed_Wmin,
+        mut miners_grid_consumed_Wmin
     ) = self.init();
 
     /* Creating all essentials channels */
@@ -208,7 +218,7 @@ pub fn run(&mut self) {
     ];
 
     for topic in topics {
-        switchboard_mqtt.subscribe(topic, QoS::AtMostOnce).unwrap();
+        switchboard_mqtt.subscribe(topic, QoS::ExactlyOnce).unwrap();
     }
 
     /* Plugs topics */
@@ -216,15 +226,15 @@ pub fn run(&mut self) {
         plug_subscribe(&mut plugs_mqtt, &miner.plug_id);
         plugs_mqtt.subscribe(
             format!("shellies/{}/relay/0", miner.plug_id),
-            QoS::AtMostOnce
+            QoS::ExactlyOnce
         ).unwrap();
     }
 
     /* Guards topics */
     for (guard_id, guard) in self.guards.iter() {
-        guards_mqtt.subscribe(format!("guards/started"),QoS::AtMostOnce).unwrap();
-        guards_mqtt.subscribe(format!("guards/{}/configured", guard_id),QoS::AtMostOnce).unwrap();
-        guards_mqtt.subscribe(format!("guards/{}/ping", guard_id),QoS::AtMostOnce).unwrap();
+        guards_mqtt.subscribe(format!("guards/started"),QoS::ExactlyOnce).unwrap();
+        guards_mqtt.subscribe(format!("guards/{}/configured", guard_id),QoS::ExactlyOnce).unwrap();
+        guards_mqtt.subscribe(format!("guards/{}/ping", guard_id),QoS::ExactlyOnce).unwrap();
         for miner_id in guard.miners.iter() {
             miner_subscribe(&mut guards_mqtt, guard_id, miner_id);
         }
@@ -243,22 +253,22 @@ pub fn run(&mut self) {
 
     /* User topics */
     for (miner_id, _) in self.miners.iter() {
-        user_mqtt.subscribe(format!("user/{}", miner_id), QoS::AtMostOnce).unwrap();
+        user_mqtt.subscribe(format!("user/{}", miner_id), QoS::ExactlyOnce).unwrap();
     }
 
     /* Spawn all workers */
     let db_thread = {
         let db_config = self.db_config.clone();
-        thread::spawn(|| database::insert_energy_data(db_config, db_rx))
+        thread::spawn(|| database::insert_energy_data_loop(db_config, db_rx))
     };
-    println!("Database worker loop spawned");
+    println!("Database worker loop spawned.");
 
     let switchboard_thread = {
         let db_tx = db_tx.clone();
         let main_tx = main_tx.clone();
         thread::spawn(|| handlers::switchboard_loop(switchboard_connection, db_tx, main_tx))
     };
-    println!("Switchboard worker loop spawned");
+    println!("Switchboard worker loop spawned.");
 
     let plugs_thread = {
         let mut miners = HashMap::new();
@@ -275,19 +285,19 @@ pub fn run(&mut self) {
         let main_tx = main_tx.clone();
         thread::spawn(|| handlers::plugs_loop(plugs_connection, miners, db_tx, main_tx))
     };
-    println!("Plugs worker loop spawned");
+    println!("Plugs worker loop spawned.");
     
     let guards_thread = {
         let main_tx = main_tx.clone();
         thread::spawn(|| handlers::guards_loop(guards_connection, main_tx))
     };
-    println!("Guards worker loop spawned");
+    println!("Guards worker loop spawned.");
     
     let user_thread = {
-        let main_tx = main_tx.clone();
+        let main_tx = main_tx;
         thread::spawn(|| handlers::user_loop(user_connection, main_tx))
     };
-    println!("User worker loop spawned");
+    println!("User worker loop spawned.");
 
     let mut last_miners_consumed_Wmin = [0; 3];
     let mut last_switchboard_consumed_Wmin = [0; 3];
@@ -296,10 +306,21 @@ pub fn run(&mut self) {
     let mut actual_total_returned_kWh = [0.0; 3];
 
     let mut switchboard_received_msgs = 0;
+    let mut last_scheduling_ts = Instant::now();
 
     let mut deadline = Instant::now() + Duration::from_secs(60);
+    let mut failure_exit = false;
 
-    loop {
+    'main: loop {
+        if failure_exit {
+            switchboard_mqtt.disconnect().unwrap();
+            plugs_mqtt.disconnect().unwrap();
+            guards_mqtt.disconnect().unwrap();
+            user_mqtt.disconnect().unwrap();
+            drop(db_tx);
+            break;
+        }
+
         match main_rx.recv_deadline(deadline) {
             Ok(msg) => match msg {
                 Message::Energy(EnergyData::Miner{ts: _, name, ec, phase, power}) => {
@@ -310,8 +331,6 @@ pub fn run(&mut self) {
                     let i = phase as usize;
                     miners_consumed_Wmin[i] += ec;
                     last_miners_consumed_Wmin[i] += ec;
-    
-                    switchboard_received_msgs += 1;
                 },
                 Message::Energy(EnergyData::Switchboard{ts, ec, er, tc, tr}) => {
                     /* Update local energy data */
@@ -322,7 +341,13 @@ pub fn run(&mut self) {
                     }
                     actual_total_consumed_kWh = tc;
                     actual_total_returned_kWh = tr;
+
+                    switchboard_received_msgs += 1;
                 },
+                Message::Energy(_) => {
+                    /* Mithra must not receive this type messages */
+                    eprintln!("[Main loop] Received energy data that must not be sent to main channel!")
+                }
                 Message::Guard {guard_id, ts, data} => {
                     self.handle_guard_msg(&guard_id, ts, data, &mut guards_mqtt, &mut plugs_mqtt);
                 },
@@ -339,24 +364,24 @@ pub fn run(&mut self) {
                         UserCommands::Exclude => {
                             if miner.included {
                                 miner.included = false;
-                                miner.state = MinerState::NotDefined;
+                                miner.state = MinerState::Undefined;
                                 plug_unsubscribe(&mut plugs_mqtt, &miner.guard);
                                 miner_unsubscribe(&mut guards_mqtt, &miner.guard, &miner_id);
                             } else {
-                                eprintln!("User tried to exclude excluded miner = {}", miner_id);
+                                eprintln!("[Main loop] User tried to exclude excluded miner = {}", miner_id);
                             }
                         },
                         UserCommands::Include => {
-                            if miner.included {
+                            if !miner.included {
                                 plug_subscribe(&mut plugs_mqtt, &miner.guard);
                                 miner_subscribe(&mut guards_mqtt, &miner.guard, &miner_id);
                                 guard_send_command(&mut guards_mqtt, &miner.guard, &miner_id, "StateReport");
                                 miner.included = true;
-                                miner.state = MinerState::NotDefined;
+                                miner.state = MinerState::Undefined;
                                 miner.target_state = None;
                                 miner.command_ts = Some(Utc::now().naive_utc());
                             } else {
-                                eprintln!("User tried to include included miner = {}", miner_id);
+                                eprintln!("[Main loop] User tried to include included miner = {}", miner_id);
                             }
                         },
                     }
@@ -376,12 +401,8 @@ pub fn run(&mut self) {
                 ].iter().all(|&t| t.is_running());
 
                 if !are_threads_running {
-                    switchboard_mqtt.disconnect().unwrap();
-                    plugs_mqtt.disconnect().unwrap();
-                    guards_mqtt.disconnect().unwrap();
-                    user_mqtt.disconnect().unwrap();
-
-                    break;
+                    failure_exit = true;
+                    break 'main;
                 }
 
                 /* Validate devices status */
@@ -390,17 +411,100 @@ pub fn run(&mut self) {
                 /* Check is it scheduling time */
                 if self.switchboard.state != DeviceState::Available {
                     /* Disable all running miners - just set target state to powered off */
+                    for (_, miner) in self.miners.iter_mut() {
+                        miner.target_state = Some(MinerState::PoweredOff);
+                    }
+
+                    last_scheduling_ts = Instant::now();
+                    switchboard_received_msgs = 0;
+                    for i in 0..3 {
+                        last_switchboard_consumed_Wmin[i] = 0;
+                        last_switchboard_returned_Wmin[i] = 0;
+                        last_miners_consumed_Wmin[i] = 0;
+                    }
 
                 } else if switchboard_received_msgs >= 5 {
+                    /* Calculate how much energy miners consumed from grid */
+                    for i in 0..3 {
+                        let consumed_from_grid = last_miners_consumed_Wmin[i].min(last_switchboard_consumed_Wmin[i]);
+                        miners_grid_consumed_Wmin[i] += consumed_from_grid;
+
+                        if let Err(_) = db_tx.send(EnergyData::MinersGrid{
+                            ts: Utc::now().naive_utc(),
+                            ec: consumed_from_grid,
+                            phase: i as u8,
+                        }) {
+                            eprintln!("[Main loop] - Database channel is closed!");
+                            failure_exit = true;
+                            continue 'main;
+                        }
+                    }
+
                     /* Obtain all running and runnable miners */
+                    let (running_miners, runnable_miners) = self.collect_miners();
+                    
+                    /* Schedule resources */
+                    let now = Instant::now() ;
+                    let (miners_to_run, miners_to_stop) = self.schedule_energy_resources(
+                        (running_miners, runnable_miners),
+                        billing_period.clone(),
+                        (
+                            [
+                                actual_total_consumed_kWh[0] - start_consumed_kWh[0],
+                                actual_total_consumed_kWh[1] - start_consumed_kWh[1],
+                                actual_total_consumed_kWh[2] - start_consumed_kWh[2],
+                            ],
+                            [
+                                actual_total_returned_kWh[0] - start_returned_kWh[0],
+                                actual_total_returned_kWh[1] - start_returned_kWh[1],
+                                actual_total_returned_kWh[2] - start_returned_kWh[2],
+                            ],
+                        ),
+                        miners_grid_consumed_Wmin.clone(),
+                        (
+                            last_switchboard_consumed_Wmin.clone(),
+                            last_switchboard_returned_Wmin.clone(),
+                        ),
+                        last_miners_consumed_Wmin.clone(),
+                        now - last_scheduling_ts,
 
-                    /* Shedule resources */
+                    );
 
+                    /* Reinitialize variables before next scheduling  */
+                    last_scheduling_ts = now;
                     switchboard_received_msgs = 0;
+                    for i in 0..3 {
+                        last_switchboard_consumed_Wmin[i] = 0;
+                        last_switchboard_returned_Wmin[i] = 0;
+                        last_miners_consumed_Wmin[i] = 0;
+                    }
+
                     /* Set target state to miners after scheduling */
+                    for miner_id in miners_to_run.iter() {
+                        let miner = self.miners.get_mut(miner_id).unwrap();
+                        miner.target_state = Some(MinerState::Running);
+                    }
+
+                    for miner_id in miners_to_stop.iter() {
+                        let miner = self.miners.get_mut(miner_id).unwrap();
+                        miner.target_state = Some(MinerState::PoweredOff);
+                    }
+
+                    self.validate_devices(&mut guards_mqtt, &mut plugs_mqtt);
                 }
 
-                /* If billing period is ending then close disconnect mqtt clients and sleep thread until new period start */
+                /* If billing period is ending then disconnect mqtt clients and put thread to sleep until new period start */
+                if billing_period.1 - Utc::now().naive_utc() < chrono::Duration::seconds(60) {
+                    switchboard_mqtt.disconnect().unwrap();
+                    plugs_mqtt.disconnect().unwrap();
+                    guards_mqtt.disconnect().unwrap();
+                    user_mqtt.disconnect().unwrap();
+                    drop(db_tx);
+
+                    thread::sleep(Duration::from_secs(60));
+                    break;
+                }
+                
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 break;
@@ -408,16 +512,28 @@ pub fn run(&mut self) {
         }
     }
 
-    //thread::sleep(Duration::from_secs(70));
-    //switchboard_mqtt.disconnect().unwrap();
+    if let Err(error_msg) = db_thread.join() {
+        eprintln!("Database loop thread paniced: {:?}", error_msg);
+    }
+    if let Err(error_msg) = switchboard_thread.join() {
+        eprintln!("Switchboard loop thread paniced: {:?}", error_msg);
+    }
+    if let Err(error_msg) = plugs_thread.join() {
+        eprintln!("Plugs loop thread paniced: {:?}", error_msg);
+    }
+    if let Err(error_msg) = guards_thread.join() {
+        eprintln!("Guards loop thread paniced: {:?}", error_msg);
+    }
+    if let Err(error_msg) = user_thread.join() {
+        eprintln!("User loop thread paniced: {:?}", error_msg);
+    }
 
-    db_thread.join().unwrap();
-    switchboard_thread.join().unwrap();
-    plugs_thread.join().unwrap();
-    guards_thread.join().unwrap();
-    user_thread.join().unwrap();
-
-    println!("Threads terminated");
+    if failure_exit {
+        eprintln!("System is not in valid state. Exiting with failure!");
+        std::process::exit(1);
+    } else {
+        println!("Main loop exits.");
+    }
 }
 
 fn parse_announce(&mut self, data: &Publish) {
@@ -428,7 +544,7 @@ fn parse_announce(&mut self, data: &Publish) {
     if data.topic == "shellies/announce" {
         let id = device["id"].as_str().unwrap();
         let dev_type =  ShellyType::from_str(device["model"].as_str().unwrap());
-        println!("dev type = {:?}", device["model"].as_str().unwrap());
+
         match dev_type {
             Ok(ShellyType::SHEM_3) => {
                 /* It is switchboard */
@@ -458,7 +574,6 @@ fn parse_announce(&mut self, data: &Publish) {
                 std::process::exit(1);
             }
         };
-        println!("dev type = {:?}", dev_type);
 
         let guard = if let Some(guard) = self.guards.get_mut(guard_id) {
             if guard.board_type != dev_type {
@@ -504,7 +619,8 @@ fn parse_announce(&mut self, data: &Publish) {
             std::process::exit(1);
         }
     } else {
-        /* Got msg from unimplemented device */
+        /* Got msg from unsubscribed topic */
+        eprintln!("Got message from undefined topic: {}", data.topic);
     }
 }
 
@@ -529,8 +645,8 @@ fn get_switchboard_data(&self) -> ([f64; 3], [f64; 3]) {
     let topic_consumed = format!("shellies/{}/emeter/+/total", self.switchboard.id);
     let topic_returned = format!("shellies/{}/emeter/+/total_returned", self.switchboard.id);
 
-    client.subscribe(topic_consumed, QoS::AtMostOnce).unwrap();
-    client.subscribe(topic_returned, QoS::AtMostOnce).unwrap();
+    client.subscribe(topic_consumed, QoS::ExactlyOnce).unwrap();
+    client.subscribe(topic_returned, QoS::ExactlyOnce).unwrap();
     
 
     let mut consumed = [None; 3];
@@ -567,7 +683,7 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
     let guard = if let Some(guard) = self.guards.get_mut(guard_id) {
         guard
     } else {
-        eprintln!("Main loop - undefined guard: {}", guard_id);
+        eprintln!("[Main loop] Undefined guard: {}", guard_id);
         return;
     };
 
@@ -576,12 +692,9 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
     match data {
         GuardData::Alert{miner_id, alert} => {
             /* Try to react */
-            let miner = if let Some(miner) = self.miners.get_mut(&miner_id) {
-                miner
-            } else {
-                eprintln!("Configuration is not consistent");
-                std::process::exit(1);
-            };
+            let miner = self.miners.get_mut(&miner_id).unwrap();
+
+            if !miner.included { return; }
 
             match alert {
                 MinerAlert::PoweredOff => {
@@ -596,21 +709,16 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
             }
         },
         GuardData::Command{miner_id, command_status, miner_state} => {
-            let miner = if let Some(miner) = self.miners.get_mut(&miner_id) {
-                miner
-            } else {
-                eprintln!("Configuration is not consistent");
-                std::process::exit(1);
-            };
+            let miner = self.miners.get_mut(&miner_id).unwrap();
+
+            if !miner.included { return; }
 
             if command_status == CommandStatus::Busy  {
                 eprintln!("Mithra made illegal operations while guard was running command!");
-                miner.state = miner_state;
                 return;
             }
             if command_status == CommandStatus::Disallowed {
-                eprintln!("Mithra made illegal operations to miner state");
-                miner.state = miner_state;
+                eprintln!("Mithra made illegal operations to miner state!");
                 return;
             }
             
@@ -627,11 +735,11 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
                 }
                 (_, _) => {
                     eprintln!(
-                        "Mithra has wrong miner state, miner = {}, state returned from guard = {}, mithra state = {}",
-                        miner_id, miner_state.to_string(), miner.state.to_string()
+                        "Mithra has wrong miner state, miner = {}, state returned from guard = {:?}, mithra state = {:?}",
+                        miner_id, miner_state, miner.state
                     );
                     guard_send_command(guards_mqtt, guard_id, &miner_id, "StateReport");
-                    miner.state = MinerState::NotDefined;
+                    miner.state = MinerState::Undefined;
                     miner.command_ts = Some(Utc::now().naive_utc());
                 }
             }} else if command_status == CommandStatus::Failed { match (miner.state, miner_state) {
@@ -643,22 +751,25 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
                     miner.command_ts = Some(Utc::now().naive_utc());
                 },
                 (MinerState::HardStopping, MinerState::Unreachable) => {
-                    miner.state = MinerState::Unreachable;
                     plug_cut_off(plugs_mqtt, &miner.plug_id);
+                    miner.state = MinerState::Unreachable;
+                    miner.target_state = Some(MinerState::PoweredOff);
+                    miner.command_ts = None;
                 },
                 (MinerState::Starting, MinerState::Aborted) |
                 (MinerState::Restarting, MinerState::Aborted) |
                 (MinerState::HardRestarting, MinerState::Aborted) => {
                     miner.state = miner_state;
+                    miner.target_state = Some(MinerState::PoweredOff);
                     miner.command_ts = None;
                 }
                 (_, _) => {
                     eprintln!(
-                        "Mithra has wrong miner state, miner = {}, state returned from guard = {}, mithra state = {}",
-                        miner_id, miner_state.to_string(), miner.state.to_string()
+                        "Mithra has wrong miner state, miner = {}, state returned from guard = {:?}, mithra state = {:?}",
+                        miner_id, miner_state, miner.state
                     );
                     guard_send_command(guards_mqtt, guard_id, &miner_id, "StateReport");
-                    miner.state = MinerState::NotDefined;
+                    miner.state = MinerState::Undefined;
                     miner.command_ts = Some(Utc::now().naive_utc());
                 }
             }}
@@ -689,38 +800,30 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
             guard.state = DeviceState::StartingUp;
             
             for miner_id in guard.miners.iter() {
-                let miner = if let Some(miner) = self.miners.get_mut(miner_id) {
-                    miner
-                } else {
-                    eprintln!("Configuration is not consistent");
-                    std::process::exit(1);
-                };
+                let miner =self.miners.get_mut(miner_id).unwrap();
                 
-                miner.state = MinerState::NotDefined;
+                miner.state = MinerState::Undefined;
             }
             guards_mqtt.publish(
                 format!("guards/{}/config", guard_id),
-                QoS::AtMostOnce,
+                QoS::ExactlyOnce,
                 false,
                 config
             ).unwrap();
         },
         GuardData::State{miner_id, state} => {
             /* Update miner state */
-            if state == MinerState::NotDefined {
-                panic!("[Main loop] Guard sent NotDefined state of miner!");
+            if state == MinerState::Undefined {
+                eprintln!("[Main loop] Guard sent undefined state of miner");
+                return;
             }
 
-            let miner = if let Some(miner) = self.miners.get_mut(&miner_id) {
-                miner
-            } else {
-                eprintln!("Configuration is not consistent");
-                std::process::exit(1);
-            };
+            let miner = self.miners.get_mut(&miner_id).unwrap();
 
+            if !miner.included { return; }
 
             /* Mithra should ask miner state only if state is not defined */
-            if miner.state != MinerState::NotDefined  {
+            if miner.state != MinerState::Undefined  {
                 eprintln!("Miner state report on guard {} and miner {} while state is known", guard_id, miner_id);
             } else {
                 match state {
@@ -731,6 +834,12 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
                     MinerState::HardRestarting => {
                         miner.command_ts = Some(Utc::now().naive_utc());
                     },
+                    MinerState::Running |
+                    MinerState::PoweredOff |
+                    MinerState::Aborted |
+                    MinerState::Unreachable => {
+                        miner.command_ts = None;
+                    }
                     _ => {}
                 }
                 miner.state = state;
@@ -780,7 +889,7 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                     if miner.included && !plug.is_enabled {
                         plug_enable(plugs_mqtt, &miner.plug_id);
                         guard_send_command(guards_mqtt, guard_id, miner_id, "StateReport");
-                        miner.state = MinerState::NotDefined;
+                        miner.state = MinerState::Undefined;
                         miner.command_ts = Some(Utc::now().naive_utc());
                     }
                 }
@@ -808,7 +917,7 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                     match miner.state {
                         MinerState::Aborted | MinerState::PoweredOff => {}
                         _ => {
-                            eprintln!("[Main loop] Miner '{}' has disabled plug but it's not powered off!", miner_id);
+                            eprintln!("[Main loop] Miner '{}' has disabled plug but it's not powered off, miner state {:?}", miner_id, miner.state);
                         }
                     }
                 }
@@ -841,7 +950,7 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                         if now - ts > Duration::seconds(130) {
                             eprintln!("[Main thread] Miner '{}' should be powered off, resetting local miner state.", miner_id);
                             guard_send_command(guards_mqtt, guard_id, miner_id, "StateReport");
-                            miner.state = MinerState::NotDefined;
+                            miner.state = MinerState::Undefined;
                             miner.command_ts = Some(Utc::now().naive_utc());
                         }
                     },
@@ -849,7 +958,7 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                         if now - ts > Duration::seconds(12) {
                             eprintln!("[Main thread] Miner '{}' should be powered off, resetting local miner state.", miner_id);
                             guard_send_command(guards_mqtt, guard_id, miner_id, "StateReport");
-                            miner.state = MinerState::NotDefined;
+                            miner.state = MinerState::Undefined;
                             miner.command_ts = Some(Utc::now().naive_utc());
                         }
                     },
@@ -857,7 +966,7 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                         if now - ts > Duration::seconds(7) {
                             eprintln!("[Main thread] Miner '{}' should be running, resetting local miner state.", miner_id);
                             guard_send_command(guards_mqtt, guard_id, miner_id, "StateReport");
-                            miner.state = MinerState::NotDefined;
+                            miner.state = MinerState::Undefined;
                             miner.command_ts = Some(Utc::now().naive_utc());
                         }
                     },
@@ -865,7 +974,7 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                         if now - ts > Duration::seconds(12) {
                             eprintln!("[Main thread] Miner '{}' restarting failed, resetting local miner state.", miner_id);
                             guard_send_command(guards_mqtt, guard_id, miner_id, "StateReport");
-                            miner.state = MinerState::NotDefined;
+                            miner.state = MinerState::Undefined;
                             miner.command_ts = Some(Utc::now().naive_utc());
                         }
                     },
@@ -873,11 +982,11 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                         if now - ts > Duration::seconds(20) {
                             eprintln!("[Main thread] Miner '{}' hard restarting failed, resetting local miner state.", miner_id);
                             guard_send_command(guards_mqtt, guard_id, miner_id, "StateReport");
-                            miner.state = MinerState::NotDefined;
+                            miner.state = MinerState::Undefined;
                             miner.command_ts = Some(Utc::now().naive_utc());
                         }
                     },
-                    (MinerState::NotDefined, _, Some(ts)) => {
+                    (MinerState::Undefined, _, Some(ts)) => {
                         if now - ts > Duration::seconds(10) {
                             eprintln!("[Main thread] Miner '{}' has undefined state.", miner_id);
                             guard_send_command(guards_mqtt, guard_id, miner_id, "StateReport");
@@ -885,14 +994,19 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
                         }
                     },
                     (MinerState::Aborted, _, _) => {
-    
-                    }
+                        if miner.target_state != Some(MinerState::PoweredOff) {
+                            miner.target_state = Some(MinerState::PoweredOff);
+                        }
+                    },
                     (MinerState::Unreachable, _, _) => {
                         if plug.is_enabled {
                             plug_cut_off(plugs_mqtt, &miner.plug_id);
-                        } 
-                    }
-                    
+                        }
+                        if miner.target_state != Some(MinerState::PoweredOff) {
+                            miner.target_state = Some(MinerState::PoweredOff);
+                        }
+                    },
+                    (_, None, _) => {},
                     (state, target, _) => {
                         eprintln!(
                             "[Main thread] System data for miner '{}' has undesirable state = {:?}, target state = {:?}",
@@ -905,20 +1019,334 @@ fn validate_devices(&mut self, guards_mqtt: &mut Client, plugs_mqtt: &mut Client
     }
 }
 
+fn collect_miners(&self) -> ([Vec<(String, f64)>; 3], [Vec<(String, f64)>; 3]) {
+    let mut running_miners = [vec![], vec![], vec![]];
+    let mut runnable_miners = [vec![], vec![], vec![]];
+
+    for (_, guard) in self.guards.iter() {
+        if guard.state != DeviceState::Available { continue; }
+        
+        for miner_id in guard.miners.iter() {
+            let miner = self.miners.get(miner_id).unwrap();
+            let plug = self.plugs.get(&miner.plug_id).unwrap();
+
+            if plug.state != DeviceState::Available || !plug.is_enabled { continue; }
+
+            let phase = miner.phase as usize;
+            let power = miner.power_consumption.unwrap_or_else(|| miner.estimated_consumption) as f64;
+
+            if miner.target_state == Some(MinerState::Running) {
+                match miner.state {
+                    MinerState::Aborted |
+                    MinerState::Unreachable => {}
+                    _ => {
+                        running_miners[phase].push((String::from(miner_id), power.ceil()))
+                    }
+                }
+            } else if miner.target_state == Some(MinerState::PoweredOff) {
+                match miner.state {
+                    MinerState::Aborted |
+                    MinerState::Unreachable => {}
+                    _ => {
+                        runnable_miners[phase].push((String::from(miner_id), power.ceil()));
+                    }
+                }
+            } else if miner.target_state == None {
+                match miner.state {
+                    MinerState::PoweredOff |
+                    MinerState::Stopping |
+                    MinerState::HardStopping => {
+                        runnable_miners[phase].push((String::from(miner_id), power.ceil()));
+                    },
+                    MinerState::Running |
+                    MinerState::Starting |
+                    MinerState::Restarting |
+                    MinerState::HardRestarting => {
+                        running_miners[phase].push((String::from(miner_id), power.ceil()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    return (running_miners, runnable_miners)
 }
 
+/* Returns miners (to_run, to_stop) */
+#[allow(non_snake_case)]
+fn schedule_energy_resources(
+    &self,
+    (running_miners, runnable_miners): ([Vec<(String, f64)>; 3], [Vec<(String, f64)>; 3]),
+    (period_start, period_end): (NaiveDateTime, NaiveDateTime),
+    (total_consumed_kWh, total_returned_kWh): ([f64; 3], [f64; 3]),
+    total_miner_grid_consumed_Wmin: [u64; 3],
+    (last_consumed_Wmin, last_returned_Wmin): ([u64; 3], [u64; 3]),
+    last_miners_consumed_Wmin: [u64; 3],
+    last_schedule_elapsed: Duration
+) -> (Vec<String>, Vec<String>) {
+    static MONTH_ENERGY_UTILIZATION: [f64; 12] = [
+        0.4, 0.4, 0.55,
+        0.7, 0.8, 0.8,
+        0.8, 0.8, 0.7,
+        0.55, 0.4, 0.4
+    ];
+
+    let now = Utc::now().naive_utc();
+    let month = (now.month() - 1) as usize;
+
+    /* Scenario 1:
+    Consumed more than can be returned. All miners musts be powered off. 
+    */
+
+
+    let sum_total_consumed_kWh = total_consumed_kWh.iter().sum::<f64>();
+
+    /* Energy that we can consume from power grid */
+    let sum_total_recoverable_kWh = total_returned_kWh.iter().sum::<f64>() * self.recovery_ratio;
+
+
+    if sum_total_consumed_kWh >= sum_total_recoverable_kWh {
+        /* We consumed too much energy, we will pay a bill */
+
+        return (
+            vec![],
+            running_miners
+            .into_iter().flatten()
+            .chain(runnable_miners.into_iter().flatten())
+            .map(|(miner_id, _)| miner_id)
+            .collect(),
+        );
+    }
+
+    let sum_miners_grid_consumed_Wmin = total_miner_grid_consumed_Wmin
+        .iter().map(|&x| x as f64).sum::<f64>();
+
+    let mut last_production_W = [0.0; 3];
+    let mut last_effective_power_W = [0.0; 3];
+    let mut running_miners_power_W = [0.0; 3];
+
+    let since_period_start = now - period_start;
+    let until_period_end = period_end - now;
+
+    let avg_power_consumption = (
+        sum_total_consumed_kWh * 1000.0 * 60.0 * 60.0
+        - sum_miners_grid_consumed_Wmin * 60.0
+    ) / (since_period_start.num_seconds() as f64);
+
+    let available_power = (
+        sum_total_recoverable_kWh * 1000.0 * 60.0 * 60.0
+    ) / (until_period_end.num_seconds() as f64);
+
+    let effective_available_power = available_power - avg_power_consumption;
+
+    for i in 0..3 {
+        last_production_W[i] = (
+            (last_returned_Wmin[i] as f64)
+            + (last_miners_consumed_Wmin[i] as f64) 
+            - (last_consumed_Wmin[i] as f64)
+        ).max(0.0) * 60.0 / last_schedule_elapsed.as_secs_f64();
+
+        last_effective_power_W[i] = (last_production_W[i] * MONTH_ENERGY_UTILIZATION[month]).floor();
+    }
+
+
+    /* Scenario 2: 
+    There is much more returned energy than we will consume before end of billing period.
+    - calculate how much energy has been consumed in average (not taking into account miners)
+    - assume that average will be same until end of billing period and calculate rest of needed energy not for miners
+    - delta of "returned" and "needed" energy will be consumed by miners
+    */
+
+    if effective_available_power >= 1.0 {
+
+        let mut all_miners: Vec<(String, usize, usize)> = vec![];
+
+        for (i, (running_miners, runnable_miners)) in
+            running_miners.into_iter().zip(runnable_miners.into_iter()).enumerate() {
+
+            for (miner, power) in running_miners.into_iter() {
+                all_miners.push((miner, i, power.ceil() as usize));
+            }
+
+            for (miner, power) in runnable_miners.into_iter() {
+                all_miners.push((miner, i, power.ceil() as usize));
+            }
+        }
+
+        let effective_power = effective_available_power.floor() as usize;
+        let mut production = [0; 3];
+        for i in 0..3 {
+            production[i] = (last_effective_power_W[i] * 0.9).floor() as usize;
+        }
+
+        return dp_knapsack2(all_miners, production, effective_power);
+    } 
+
+    /* Scenario 3:
+    Monitor energy production since last scheduling and try to predict the future.
+    - get produced energy and check how much energy consumed miners
+    - if more produced than consumed then try run additional miners
+    - else power off running miners to consume less energy than will be produced
+    */
+
+    let mut miners_to_run = vec![];
+    let mut miners_to_stop = vec![];
+
+    for (i, (running_miners, runnable_miners)) in 
+        running_miners.into_iter().zip(runnable_miners.into_iter()).enumerate() {
+
+        running_miners_power_W[i] = running_miners.iter().map(|(_, x)| x.ceil()).sum::<f64>();
+
+        if running_miners_power_W[i] <= last_effective_power_W[i] {
+            /* There is produced more energy than before, we can try run extra miners */
+            let (to_run, to_stop) = dp_knapsack1(
+                runnable_miners.into_iter().map(|(id, power)| (id, power.ceil() as usize)).collect(),
+                last_effective_power_W[i] as usize
+            );
+
+            for miner_id in to_run.into_iter() {
+                miners_to_run.push(miner_id);
+            }
+            for miner_id in to_stop.into_iter() {
+                miners_to_stop.push(miner_id);
+            }
+            for (miner_id, _) in running_miners.into_iter() {
+                miners_to_run.push(miner_id);
+            }
+        } else {
+            /* There is produced less energy than before, we need to limit working miners */
+            let (to_run, to_stop) = dp_knapsack1(
+                running_miners.into_iter().map(|(id, power)| (id, power.ceil() as usize)).collect(),
+                last_effective_power_W[i] as usize
+            );
+
+            for miner_id in to_run.into_iter() {
+                miners_to_run.push(miner_id);
+            }
+            for miner_id in to_stop.into_iter() {
+                miners_to_stop.push(miner_id);
+            }
+            for (miner_id, _) in runnable_miners.into_iter() {
+                miners_to_stop.push(miner_id);
+            }
+        } 
+    }
+
+    return (miners_to_run, miners_to_stop);
+
+    fn dp_knapsack1(miners: Vec<(String, usize)>, max_power: usize) -> (Vec<String>, Vec<String>) {
+        let mut dp = vec![None; max_power + 1];
+
+        for (idx, &(_, power)) in miners.iter().enumerate() {
+            for i in ((power + 1)..=max_power).rev() {
+                if dp[i] == None && dp[i - power] != None {
+                    dp[i] = Some(idx);
+                }
+            }
+            if dp[power] == None {
+                dp[power] = Some(idx);
+            }
+        }
+
+        let mut idx = max_power;
+        while let None = dp[idx] { 
+            if let None = idx.checked_sub(1) {
+                return (
+                    vec![], 
+                    miners.into_iter().map(|(miner_id, _)| { miner_id }).collect(),
+                )
+            }
+        }
+
+        let mut chosen_miners  = HashSet::new();
+        while idx > 0 {
+            let i = dp[idx].unwrap();
+            chosen_miners.insert(i);
+            idx -= miners[i].1;
+        }
+
+        let mut miners_to_run = vec![];
+        let mut miners_to_stop = vec![];
+
+        miners.into_iter().enumerate()
+        .for_each(|(i, (miner_id, _))| { 
+            if chosen_miners.contains(&i) {
+                miners_to_run.push(miner_id);
+            } else {
+                miners_to_stop.push(miner_id);
+            } 
+        });
+
+        return (miners_to_run, miners_to_stop);
+    }
+
+    fn dp_knapsack2(miners: Vec<(String, usize, usize)>, phase_production: [usize; 3], avg_power: usize) -> (Vec<String>, Vec<String>) {
+        let mut max_phase = [0; 3];
+        for i in 0..3  { 
+            max_phase[i] = phase_production[i] + avg_power;
+        }
+        let max_phase = max_phase;
+        let max_power = avg_power + max_phase.iter().sum::<usize>();
+        let mut dp: Vec<Option<(usize, [usize; 3])>> = vec![None; max_power + 1];
+
+        for (idx, &(_, power, p)) in miners.iter().enumerate() {
+            for i in ((power + 1)..=max_power).rev() {
+                if let Some((_, phases)) = dp[i - power] {
+                    if dp[i] == None && phases[p] + power <= max_phase[p] {
+                        let mut phases = phases.clone();
+                        phases[p] += power;
+                        dp[i] = Some((idx, phases));
+                    }
+                }
+            }
+            if dp[power] == None {
+                let mut phases = [0; 3];
+                phases[p] += power;
+                dp[power] = Some((idx, phases));
+            }
+        }
+
+        let mut idx = max_power;
+        while let None = dp[idx] { 
+            if let None = idx.checked_sub(1) {
+                return (
+                    vec![], 
+                    miners.into_iter().map(|(miner_id, _, _)| { miner_id }).collect(),
+                )
+            }
+        }
+
+        let mut chosen_miners  = HashSet::new();
+        while idx > 0 {
+            let (i, _) = dp[idx].unwrap();
+            chosen_miners.insert(i);
+            idx -= miners[i].1;
+        }
+
+        let mut miners_to_run = vec![];
+        let mut miners_to_stop = vec![];
+
+        miners.into_iter().enumerate()
+        .for_each(|(i, (miner_id, _, _))| { 
+            if chosen_miners.contains(&i) {
+                miners_to_run.push(miner_id);
+            } else {
+                miners_to_stop.push(miner_id);
+            } 
+        });
+
+        return (miners_to_run, miners_to_stop);
+    }
+}
+
+}
 
 fn get_guard_config(guard: &Guard, miners: &HashMap<String, Miner>) -> String {
     let mut config = guard.miners.len().to_string();
 
     for miner_id in guard.miners.iter() {
-        let pinset = if let Some(miner) = miners.get(miner_id) {
-            miner.pinset
-        } else {
-            eprintln!("Configuration is not consistent");
-            std::process::exit(1);
-        };
-
+        let pinset = miners.get(miner_id).unwrap().pinset;
         config += format!(" {} {}", miner_id, pinset).as_str();
     }
 
@@ -928,7 +1356,7 @@ fn get_guard_config(guard: &Guard, miners: &HashMap<String, Miner>) -> String {
 fn guard_send_command(guards_mqtt: &mut Client, guard_id: &String, miner_id: &String, command: &str) {
     guards_mqtt.publish(
         format!("guards/{}/miners/{}", guard_id, miner_id),
-        QoS::AtMostOnce,
+        QoS::ExactlyOnce,
         false,
         command,
     ).unwrap();
@@ -937,16 +1365,16 @@ fn guard_send_command(guards_mqtt: &mut Client, guard_id: &String, miner_id: &St
 fn guard_reset(guards_mqtt: &mut Client, guard_id: &String) {
     guards_mqtt.publish(
         format!("guards/{}/command", guard_id),
-        QoS::AtMostOnce,
+        QoS::ExactlyOnce,
         false,
         "reset".as_bytes(),
     ).unwrap();
 }
 
 fn miner_subscribe(guards_mqtt: &mut Client, guard_id: &String, miner_id: &String) {
-    guards_mqtt.subscribe(format!("guards/{}/miners/{}/alert", guard_id, miner_id), QoS::AtMostOnce).unwrap();
-    guards_mqtt.subscribe(format!("guards/{}/miners/{}/command", guard_id, miner_id), QoS::AtMostOnce).unwrap();
-    guards_mqtt.subscribe(format!("guards/{}/miners/{}/status", guard_id, miner_id), QoS::AtMostOnce).unwrap();
+    guards_mqtt.subscribe(format!("guards/{}/miners/{}/alert", guard_id, miner_id), QoS::ExactlyOnce).unwrap();
+    guards_mqtt.subscribe(format!("guards/{}/miners/{}/command", guard_id, miner_id), QoS::ExactlyOnce).unwrap();
+    guards_mqtt.subscribe(format!("guards/{}/miners/{}/status", guard_id, miner_id), QoS::ExactlyOnce).unwrap();
 }
 
 
@@ -957,8 +1385,8 @@ fn miner_unsubscribe(guards_mqtt: &mut Client, guard_id: &String, miner_id: &Str
 }
 
 fn plug_subscribe(plugs_mqtt: &mut Client, plug_id: &String) {
-    plugs_mqtt.subscribe(format!("shellies/{}/relay/0/power", plug_id), QoS::AtMostOnce).unwrap();
-    plugs_mqtt.subscribe(format!("shellies/{}/relay/0/energy", plug_id), QoS::AtMostOnce).unwrap();
+    plugs_mqtt.subscribe(format!("shellies/{}/relay/0/power", plug_id), QoS::ExactlyOnce).unwrap();
+    plugs_mqtt.subscribe(format!("shellies/{}/relay/0/energy", plug_id), QoS::ExactlyOnce).unwrap();
 }
 
 
@@ -970,7 +1398,7 @@ fn plug_unsubscribe(plugs_mqtt: &mut Client, plug_id: &String) {
 fn plug_cut_off(plugs_mqtt: &mut Client, plug_id: &String) {
     plugs_mqtt.publish(
         format!("shellies/{}/relay/0/command", plug_id), 
-        QoS::AtMostOnce,
+        QoS::ExactlyOnce,
         false,
         "off".as_bytes()
     ).unwrap();
@@ -979,7 +1407,7 @@ fn plug_cut_off(plugs_mqtt: &mut Client, plug_id: &String) {
 fn plug_enable(plugs_mqtt: &mut Client, plug_id: &String) {
     plugs_mqtt.publish(
         format!("shellies/{}/relay/0/command", plug_id), 
-        QoS::AtMostOnce,
+        QoS::ExactlyOnce,
         false,
         "on".as_bytes()
     ).unwrap();

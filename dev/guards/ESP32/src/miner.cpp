@@ -2,7 +2,7 @@
 #include "miner.hpp"
 
 static const char * stateNames[] = {
-    "NotDefined",
+    "Undefined",
     "PoweredOff",
     "Starting",
     "Running",
@@ -19,7 +19,7 @@ const char * getStateName(State state) {
 }
 
 static const char * commandNames[] = {
-    "NotDefined",
+    "Undefined",
     "Idle",
     "PowerOn",
     "PowerOff",
@@ -38,7 +38,7 @@ Command getCommandFromName(String& state) {
         if (state == commandNames[i])
             return static_cast<Command>(i);
     }
-    return Command::NotDefined;
+    return Command::Undefined;
 }
 
 TimerWrapper& Miner::timer = getTimerInstance();
@@ -55,7 +55,7 @@ void Miner::setConfiguration(u8 pinSet_, String & id_) {
     commandTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/command";
     statusTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/status";
 
-    state = State::NotDefined;
+    state = State::Undefined;
     command = Command::Idle;
     isCommandRunning = false;
     statusToReport = false;
@@ -135,7 +135,7 @@ void Miner::runCommand() {
         }
 
         case Command::StateReport:
-        case Command::NotDefined:
+        case Command::Undefined:
         case Command::Idle:
         default:
             Serial.printf(
@@ -295,7 +295,7 @@ void Miner::watchCommandExecution() {
         break;
 
         case Command::StateReport:
-        case Command::NotDefined: 
+        case Command::Undefined: 
         case Command::Idle: 
         break;
         default: {
@@ -352,7 +352,7 @@ void Miner::watchMinerState() {
                 state = State::Aborted;
 
                 /* Report problem  */
-                client->publish(alertTopic, "PoweredOn");
+                client->publish(alertTopic, "PoweredOff");
             }
         }
         break;
@@ -366,7 +366,7 @@ void Miner::watchMinerState() {
         }
         break;
 
-        case State::NotDefined:
+        case State::Undefined:
         default: {
             Serial.printf(
                 "Miner %s has undefined state %d in watchMinerState function!\n",

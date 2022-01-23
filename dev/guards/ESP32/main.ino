@@ -146,7 +146,7 @@ void controlMessageReceiver(String &topic, String &payload) {
 
             Command command = getCommandFromName(payload);
 
-            if (command == Command::NotDefined) {
+            if (command == Command::Undefined) {
                 /* Undefined command received */
                 sprintf(response, "command=UNDEFINED, state=%s", miners[id].state);
                 client.publish(miners[id].commandTopic, response);
