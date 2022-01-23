@@ -8,29 +8,29 @@
 #include "utils.hpp"
 
 enum class State {
-    NotDefined = 0,
-    PoweredOff,
-    Starting,
-    Running,
-    Stopping,
-    HardStopping, 
-    Restarting,
-    HardRestarting,
-    Aborted,
-    Unreachable
+    Undefined = 0,
+    PoweredOff = 1,
+    Starting = 2,
+    Running = 3,
+    Stopping = 4,
+    HardStopping = 5, 
+    Restarting = 6,
+    HardRestarting = 7,
+    Aborted = 8,
+    Unreachable = 9
 };
 
 const char * getStateName(State);
 
 enum class Command {
-    NotDefined = 0,
+    Undefined = 0,
     Idle,
     PowerOn,
     PowerOff,
     HardStop,
     Reset,
     HardReset,
-    LedReport
+    StateReport
 };
 
 const char * getCommandName(Command);
@@ -43,10 +43,11 @@ private:
     u64 timestamp;
     u32 commandStage = 0;
 
-    String commandPrefixTopic;
-    String errorLogTopic;
-
 public:
+    String alertTopic;
+    String commandTopic;
+    String statusTopic;
+
     static MQTTClient * client;
 
     u8 pinSet;
@@ -60,11 +61,13 @@ public:
     
     Command command;
     bool isCommandRunning;
+    bool statusToReport;
 
     void setConfiguration(u8, String&);
     void runCommand();
     void watchCommandExecution();
     void watchMinerState();
+    void sendStatusMessage();
 };
 
 #endif

@@ -16,8 +16,11 @@ static MQTTClient client;
 static Miner miners[MAX_MINERS];
 static i32 minersCount = -1;
 
+static char response[128];
+
 TimerWrapper& timer = getTimerInstance();
 u64 timestamp = 0;
+u64 pingTimestamp = 0;
 
 bool isConfigSet = false;
 bool runRestart = false;
@@ -61,7 +64,9 @@ void applyConfig() {
     Miner::client = &client;
 
     /* Subscribe miner control topics */
-    client.subscribe(GUARD_PREFIX_TOPIC + "miners/+");
+    for(int i = 0; i < minersCount; i++) {
+        client.subscribe(GUARD_PREFIX_TOPIC + "miners/" + miners[i].id);
+    }
     client.subscribe(GUARD_PREFIX_TOPIC + "command");
     client.subscribe(GUARD_COMMAND_TOPIC);
 }
@@ -122,6 +127,7 @@ void startUpMessageReceiver(String &topic, String &payload) {
 
 void controlMessageReceiver(String &topic, String &payload) {
     Serial.println("incoming: " + topic + " = " + payload);
+    Serial.flush();
 
     if (topic.startsWith(GUARD_PREFIX_TOPIC)) {
         String subtopic = topic.substring(GUARD_PREFIX_TOPIC.length());
@@ -133,19 +139,26 @@ void controlMessageReceiver(String &topic, String &payload) {
             i32 id = getMinerIndex(subtopic);
 
             if(id < 0) {
-                client.publish(topic, "FAILED: Undefined miner name");
+                // client.publish(topic, "FAILED");
+                // Serial
                 return;
             }
 
             Command command = getCommandFromName(payload);
 
-            if (command == Command::NotDefined) {
+            if (command == Command::Undefined) {
                 /* Undefined command received */
-                client.publish(topic, "FAILED: Undefined command");
+                sprintf(response, "command=UNDEFINED, state=%s", miners[id].state);
+                client.publish(miners[id].commandTopic, response);
+                return;
+            } else if (command == Command::StateReport) {
+                /* Set flag */
+                miners[id].statusToReport = true;
                 return;
             } else if (miners[id].command != Command::Idle) {
                 /* Miner should be in idle command mode */
-                client.publish(topic, "FAILED: Miner is busy");
+                sprintf(response, "command=BUSY, state=%s", miners[id].state);
+                client.publish(topic + "/command", response);
                 return;
             }
 
@@ -157,7 +170,7 @@ void controlMessageReceiver(String &topic, String &payload) {
         }
         else {
             /* Undefined topic */
-            client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
+            // client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
             Serial.printf("Guard received message from unspecified topic: %s\n", topic);
             Serial.flush();
         }
@@ -204,7 +217,7 @@ void runGuardAnnounce() {
 
     minersBuffer += "[";
     for(int i = 0; i < minersCount; i++) {
-        sprintf(miner, "{\"id\": \"%s\" , \"pinset\": %d}", miners[i].id, miners[i].pinSet);
+        sprintf(miner, "{\"id\": \"%s\", \"pinset\": %d}", miners[i].id, miners[i].pinSet);
         minersBuffer += miner;
         if (i < minersCount - 1) {
             minersBuffer += ',';
@@ -223,8 +236,13 @@ void runGuardAnnounce() {
     client.publish(GUARD_ANNOUNCE_TOPIC, buffer);
 }
 
+void runGuardPing() {
+    client.publish(GUARD_PING_TOPIC);
+}
+
 void setup() {
     Serial.begin(115200);
+    Serial.flush();
 
     /* WiFi configuring */
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -262,7 +280,7 @@ void setup() {
     client.publish(GUARD_CONFIGURED_TOPIC, DEV_ID);
 
     printConfigSummary();
-    timestamp = timer.getTimestamp();
+    timestamp = pingTimestamp = timer.getTimestamp();
 }
 
 void loop() {
@@ -280,6 +298,13 @@ void loop() {
     if (runAnnounce) {
         runAnnounce = false;
         runGuardAnnounce();
+    }
+
+    /* Checking do miners need report state */
+    for (u32 i = 0; i < minersCount; ++i) {
+        if (miners[i].statusToReport) {
+            miners[i].sendStatusMessage();
+        }
     }
 
     /* Checking commands on each miner */
@@ -304,5 +329,10 @@ void loop() {
         }
 
         timestamp = timer.getTimestamp();
+    }
+
+    if (timer.isTimeElapsed(pingTimestamp, 30000)) {
+        runGuardPing();
+        pingTimestamp = timer.getTimestamp();
     }
 }

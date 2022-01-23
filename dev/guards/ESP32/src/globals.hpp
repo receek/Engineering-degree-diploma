@@ -33,8 +33,8 @@ static const timer_group_t TIMER_GROUP =  TIMER_GROUP_0;
 static const timer_idx_t TIMER_INDEX = TIMER_0;
 static const u32 TIMER_DIVIDER = 80;
 
-const char WIFI_SSID[] = "dom";
-const char WIFI_PASSWORD[] = "0987654321"; 
+const char WIFI_SSID[] = "";
+const char WIFI_PASSWORD[] = "";
 
 const IPAddress IP_MQTT_BROKER(192, 168, 1, 111);
 const int PORT_MQTT_BROKER = 1883;
@@ -44,11 +44,12 @@ const char USER[] = "broker";
 const char PASSWORD[] = "broker";
 
 const String GUARD_STARTED_TOPIC = String("guards/started");
-const String GUARD_CONFIG_TOPIC = String("guards/config/") + DEV_ID;
-const String GUARD_CONFIGURED_TOPIC = String("guards/configured");
+const String GUARD_CONFIG_TOPIC = String("guards/") + DEV_ID + "/config";
+const String GUARD_CONFIGURED_TOPIC = String("guards/") + DEV_ID + "/configured";
 const String GUARD_PREFIX_TOPIC = String("guards/") + DEV_ID + "/";
 const String GUARD_ERROR_LOG_TOPIC = String("guards/") + DEV_ID + "/error";
 const String GUARD_COMMAND_TOPIC = String("guards/command");
 const String GUARD_ANNOUNCE_TOPIC = String("guards/announce");
+const String GUARD_PING_TOPIC = String("guards/") + DEV_ID + "/ping";
 
 #endif
