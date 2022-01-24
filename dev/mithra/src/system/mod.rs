@@ -175,14 +175,14 @@ fn init(&mut self) ->
     return (period, switchboard_params, miners_consumption, miners_grid_consumption);
 }
 
-#[allow(non_snake_case)]
+
 pub fn run(&mut self) {
     /* Initialize system */
     let (
         billing_period,
-        (start_consumed_kWh, start_returned_kWh),
-        mut miners_consumed_Wmin,
-        mut miners_grid_consumed_Wmin
+        (start_consumed_wh, start_returned_wh),
+        mut miners_consumed_wmin,
+        mut miners_grid_consumed_wmin
     ) = self.init();
 
     /* Creating all essentials channels */
@@ -299,11 +299,11 @@ pub fn run(&mut self) {
     };
     println!("User worker loop spawned.");
 
-    let mut last_miners_consumed_Wmin = [0; 3];
-    let mut last_switchboard_consumed_Wmin = [0; 3];
-    let mut last_switchboard_returned_Wmin = [0; 3];
-    let mut actual_total_consumed_kWh = [0.0; 3];
-    let mut actual_total_returned_kWh = [0.0; 3];
+    let mut last_miners_consumed_wmin = [0; 3];
+    let mut last_switchboard_consumed_wmin = [0; 3];
+    let mut last_switchboard_returned_wmin = [0; 3];
+    let mut actual_total_consumed_wh = [0.0; 3];
+    let mut actual_total_returned_wh = [0.0; 3];
 
     let mut switchboard_received_msgs = 0;
     let mut last_scheduling_ts = Instant::now();
@@ -329,18 +329,18 @@ pub fn run(&mut self) {
                     miner.power_consumption = Some(power);
     
                     let i = phase as usize;
-                    miners_consumed_Wmin[i] += ec;
-                    last_miners_consumed_Wmin[i] += ec;
+                    miners_consumed_wmin[i] += ec;
+                    last_miners_consumed_wmin[i] += ec;
                 },
                 Message::Energy(EnergyData::Switchboard{ts, ec, er, tc, tr}) => {
                     /* Update local energy data */
                     self.switchboard.last_seen = ts;
                     for i in 0..3 {
-                        last_switchboard_consumed_Wmin[i] += ec[i];
-                        last_switchboard_returned_Wmin[i] += er[i];
+                        last_switchboard_consumed_wmin[i] += ec[i];
+                        last_switchboard_returned_wmin[i] += er[i];
                     }
-                    actual_total_consumed_kWh = tc;
-                    actual_total_returned_kWh = tr;
+                    actual_total_consumed_wh = tc;
+                    actual_total_returned_wh = tr;
 
                     switchboard_received_msgs += 1;
                 },
@@ -418,16 +418,16 @@ pub fn run(&mut self) {
                     last_scheduling_ts = Instant::now();
                     switchboard_received_msgs = 0;
                     for i in 0..3 {
-                        last_switchboard_consumed_Wmin[i] = 0;
-                        last_switchboard_returned_Wmin[i] = 0;
-                        last_miners_consumed_Wmin[i] = 0;
+                        last_switchboard_consumed_wmin[i] = 0;
+                        last_switchboard_returned_wmin[i] = 0;
+                        last_miners_consumed_wmin[i] = 0;
                     }
 
                 } else if switchboard_received_msgs >= 5 {
                     /* Calculate how much energy miners consumed from grid */
                     for i in 0..3 {
-                        let consumed_from_grid = last_miners_consumed_Wmin[i].min(last_switchboard_consumed_Wmin[i]);
-                        miners_grid_consumed_Wmin[i] += consumed_from_grid;
+                        let consumed_from_grid = last_miners_consumed_wmin[i].min(last_switchboard_consumed_wmin[i]);
+                        miners_grid_consumed_wmin[i] += consumed_from_grid;
 
                         if let Err(_) = db_tx.send(EnergyData::MinersGrid{
                             ts: Utc::now().naive_utc(),
@@ -450,22 +450,22 @@ pub fn run(&mut self) {
                         billing_period.clone(),
                         (
                             [
-                                actual_total_consumed_kWh[0] - start_consumed_kWh[0],
-                                actual_total_consumed_kWh[1] - start_consumed_kWh[1],
-                                actual_total_consumed_kWh[2] - start_consumed_kWh[2],
+                                actual_total_consumed_wh[0] - start_consumed_wh[0],
+                                actual_total_consumed_wh[1] - start_consumed_wh[1],
+                                actual_total_consumed_wh[2] - start_consumed_wh[2],
                             ],
                             [
-                                actual_total_returned_kWh[0] - start_returned_kWh[0],
-                                actual_total_returned_kWh[1] - start_returned_kWh[1],
-                                actual_total_returned_kWh[2] - start_returned_kWh[2],
+                                actual_total_returned_wh[0] - start_returned_wh[0],
+                                actual_total_returned_wh[1] - start_returned_wh[1],
+                                actual_total_returned_wh[2] - start_returned_wh[2],
                             ],
                         ),
-                        miners_grid_consumed_Wmin.clone(),
+                        miners_grid_consumed_wmin.clone(),
                         (
-                            last_switchboard_consumed_Wmin.clone(),
-                            last_switchboard_returned_Wmin.clone(),
+                            last_switchboard_consumed_wmin.clone(),
+                            last_switchboard_returned_wmin.clone(),
                         ),
-                        last_miners_consumed_Wmin.clone(),
+                        last_miners_consumed_wmin.clone(),
                         now - last_scheduling_ts,
 
                     );
@@ -474,9 +474,9 @@ pub fn run(&mut self) {
                     last_scheduling_ts = now;
                     switchboard_received_msgs = 0;
                     for i in 0..3 {
-                        last_switchboard_consumed_Wmin[i] = 0;
-                        last_switchboard_returned_Wmin[i] = 0;
-                        last_miners_consumed_Wmin[i] = 0;
+                        last_switchboard_consumed_wmin[i] = 0;
+                        last_switchboard_returned_wmin[i] = 0;
+                        last_miners_consumed_wmin[i] = 0;
                     }
 
                     /* Set target state to miners after scheduling */
@@ -1079,10 +1079,10 @@ fn schedule_energy_resources(
     &self,
     (running_miners, runnable_miners): ([Vec<(String, f64)>; 3], [Vec<(String, f64)>; 3]),
     (period_start, period_end): (NaiveDateTime, NaiveDateTime),
-    (total_consumed_kWh, total_returned_kWh): ([f64; 3], [f64; 3]),
-    total_miner_grid_consumed_Wmin: [u64; 3],
-    (last_consumed_Wmin, last_returned_Wmin): ([u64; 3], [u64; 3]),
-    last_miners_consumed_Wmin: [u64; 3],
+    (total_consumed_wh, total_returned_wh): ([f64; 3], [f64; 3]),
+    total_miner_grid_consumed_wmin: [u64; 3],
+    (last_consumed_wmin, last_returned_wmin): ([u64; 3], [u64; 3]),
+    last_miners_consumed_wmin: [u64; 3],
     last_schedule_elapsed: Duration
 ) -> (Vec<String>, Vec<String>) {
     static MONTH_ENERGY_UTILIZATION: [f64; 12] = [
@@ -1100,13 +1100,13 @@ fn schedule_energy_resources(
     */
 
 
-    let sum_total_consumed_kWh = total_consumed_kWh.iter().sum::<f64>();
+    let sum_total_consumed_wh = total_consumed_wh.iter().sum::<f64>();
 
     /* Energy that we can consume from power grid */
-    let sum_total_recoverable_kWh = total_returned_kWh.iter().sum::<f64>() * self.recovery_ratio;
+    let sum_total_recoverable_wh = total_returned_wh.iter().sum::<f64>() * self.recovery_ratio;
 
 
-    if sum_total_consumed_kWh >= sum_total_recoverable_kWh {
+    if sum_total_consumed_wh >= sum_total_recoverable_wh {
         /* We consumed too much energy, we will pay a bill */
 
         return (
@@ -1119,7 +1119,7 @@ fn schedule_energy_resources(
         );
     }
 
-    let sum_miners_grid_consumed_Wmin = total_miner_grid_consumed_Wmin
+    let sum_miners_grid_consumed_wmin = total_miner_grid_consumed_wmin
         .iter().map(|&x| x as f64).sum::<f64>();
 
     let mut last_production_W = [0.0; 3];
@@ -1130,21 +1130,21 @@ fn schedule_energy_resources(
     let until_period_end = period_end - now;
 
     let avg_power_consumption = (
-        sum_total_consumed_kWh * 1000.0 * 60.0 * 60.0
-        - sum_miners_grid_consumed_Wmin * 60.0
+        sum_total_consumed_wh * 60.0 * 60.0
+        - sum_miners_grid_consumed_wmin * 60.0
     ) / (since_period_start.num_seconds() as f64);
 
     let available_power = (
-        sum_total_recoverable_kWh * 1000.0 * 60.0 * 60.0
+        sum_total_recoverable_wh * 60.0 * 60.0
     ) / (until_period_end.num_seconds() as f64);
 
     let effective_available_power = available_power - avg_power_consumption;
 
     for i in 0..3 {
         last_production_W[i] = (
-            (last_returned_Wmin[i] as f64)
-            + (last_miners_consumed_Wmin[i] as f64) 
-            - (last_consumed_Wmin[i] as f64)
+            (last_returned_wmin[i] as f64)
+            + (last_miners_consumed_wmin[i] as f64) 
+            - (last_consumed_wmin[i] as f64)
         ).max(0.0) * 60.0 / last_schedule_elapsed.as_secs_f64();
 
         last_effective_power_W[i] = (last_production_W[i] * MONTH_ENERGY_UTILIZATION[month]).floor();
