@@ -103,7 +103,7 @@ fn get_cli_parameters() -> Result<ArgMatches<'static>, Error> {
             .short("s")
             .long("servers")
             .value_name("FILE")
-            .help("Sets path to configuration file with PostagreSQL and MQTT server credentials")
+            .help("Sets path to configuration file with PostagreSQL, MQTT servers credentials and energy contract data")
             .takes_value(true)
             .required(true)
             .validator(validate_file)

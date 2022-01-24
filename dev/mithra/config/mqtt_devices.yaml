@@ -1,0 +1,27 @@
+---
+switchboard:
+  id: shellyem3-0
+guards:
+  - id: Guard00
+    type: ESP32
+    miners:
+      - id: Miner00
+        pinset: 0
+        plug: shellyplug-s-0
+        phase: 0
+        consumption: 200
+      - id: Miner01
+        pinset: 0
+        plug: shellyplug-s-1
+        phase: 0
+        consumption: 400
+
+  - id: Guard01
+    type: ESP32
+    miners:
+      - id: Miner02
+        pinset: 0
+        plug: shellyplug-s-2
+        phase: 0
+        consumption: 300
+
