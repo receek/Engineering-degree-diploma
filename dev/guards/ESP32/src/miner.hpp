@@ -24,13 +24,13 @@ const char * getStateName(State);
 
 enum class Command {
     Undefined = 0,
-    Idle,
-    PowerOn,
-    PowerOff,
-    HardStop,
-    Reset,
-    HardReset,
-    StateReport
+    Idle = 1,
+    PowerOn = 2,
+    PowerOff = 3,
+    HardStop = 4,
+    Reset = 5,
+    HardReset = 6,
+    StateReport = 7
 };
 
 const char * getCommandName(Command);
@@ -46,7 +46,7 @@ private:
 public:
     String alertTopic;
     String commandTopic;
-    String statusTopic;
+    String stateTopic;
 
     static MQTTClient * client;
 
@@ -61,13 +61,13 @@ public:
     
     Command command;
     bool isCommandRunning;
-    bool statusToReport;
+    bool stateToReport;
 
     void setConfiguration(u8, String&);
     void runCommand();
     void watchCommandExecution();
     void watchMinerState();
-    void sendStatusMessage();
+    void sendStateMessage();
 };
 
 #endif

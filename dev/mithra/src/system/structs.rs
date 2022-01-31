@@ -97,17 +97,17 @@ pub enum MinerState {
 impl FromStr for MinerState {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Undefined" => Ok(Self::Undefined),
-            "PoweredOff" => Ok(Self::PoweredOff),
-            "Starting" => Ok(Self::Starting),
-            "Running" => Ok(Self::Running),
-            "Stopping" => Ok(Self::Stopping),
-            "HardStopping" => Ok(Self::HardStopping), 
-            "Restarting" => Ok(Self::Restarting),
-            "HardRestarting" => Ok(Self::HardRestarting),
-            "Aborted" => Ok(Self::Aborted),
-            "Unreachable" => Ok(Self::Unreachable),
+        match s.to_lowercase().as_str() {
+            "undefined" => Ok(Self::Undefined),
+            "poweredoff" => Ok(Self::PoweredOff),
+            "starting" => Ok(Self::Starting),
+            "running" => Ok(Self::Running),
+            "stopping" => Ok(Self::Stopping),
+            "hardstopping" => Ok(Self::HardStopping), 
+            "restarting" => Ok(Self::Restarting),
+            "hardrestarting" => Ok(Self::HardRestarting),
+            "aborted" => Ok(Self::Aborted),
+            "unreachable" => Ok(Self::Unreachable),
             _ => Err(String::from("Unimplemented miner state")) 
         }
     }
@@ -115,20 +115,22 @@ impl FromStr for MinerState {
 
 #[derive(Debug, PartialEq)]
 pub enum CommandStatus {
+    Busy,
     Disallowed,
     Done,
     Failed,
-    Busy,
+    Undefined,
 }
 
 impl FromStr for CommandStatus {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "busy" => Ok(Self::Busy),
             "disallowed" => Ok(Self::Disallowed),
             "done" => Ok(Self::Done),
             "failed" => Ok(Self::Failed),
-            "busy" => Ok(Self::Busy),
+            "undefined" => Ok(Self::Undefined),
             _ => Err(String::from("Unimplemented command status")) 
         }
     }
@@ -170,9 +172,9 @@ pub enum MinerAlert {
 impl FromStr for MinerAlert {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "PoweredOn" => Ok(Self::PoweredOn),
-            "PoweredOff" => Ok(Self::PoweredOff),
+        match s.to_lowercase().as_str() {
+            "poweredon" => Ok(Self::PoweredOn),
+            "poweredoff" => Ok(Self::PoweredOff),
             _ => Err(String::from("Unimplemented miner alert")) 
         }
     }

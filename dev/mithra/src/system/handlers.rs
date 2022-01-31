@@ -312,7 +312,7 @@ pub fn guards_loop(mut connection: Connection, tx: Sender<Message>) {
                                 }
                             });
                         },
-                        "status" => {
+                        "state" => {
                             msg = Some( Message::Guard {
                                 guard_id,
                                 ts,

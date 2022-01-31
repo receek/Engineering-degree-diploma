@@ -31,7 +31,7 @@ Steps:
 3. Check we obtain any control message, if true then:
     1. Check message type and start appropriate operating procedure.
     2. If needed, set execution timers.
-4. Check any command progress:
+4. Check all commands sprogress:
     1. Check appropriate procedure succeed or failed.
     2. Publish message with report to the server.
 5. Check miners state:
@@ -39,7 +39,7 @@ Steps:
     2. Else handle it and publish error message.
 
 ### States description:
-- `NotDefined` - Any of below.
+- `Undefined` - Any of below.
 - `PoweredOff` - Miner is power off, from this state miner can start work.
 - `Starting` - Miner is starting, if succed state can be changed to `Running`.
 - `Running` - Miner started and works correctly, from this state can be run power off/restart.
@@ -51,12 +51,12 @@ Steps:
 - `Unreachable` - Miner doesn't react on commands properly.
 
 ### Commands description:
-- `NotDefined` - Any of below.
+- `Undefined` - Any of below.
 - `Idle` - Miner waits for commnd potentially. 
 - `PowerOn` - Power up miner.
 - `PowerOff` - Power down miner.
 - `HardStop` - Power down miner by pin power (5 sec.).
 - `Reset` - Restart miner with pin reset.
 - `HardReset` - Restert miner by pin power (5 sec.)
-- `LedReport` - Report to server state of pin LED.
+- `StateReport` - Report to server state of given miner.
 

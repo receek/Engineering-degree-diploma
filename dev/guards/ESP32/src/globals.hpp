@@ -33,15 +33,16 @@ static const timer_group_t TIMER_GROUP =  TIMER_GROUP_0;
 static const timer_idx_t TIMER_INDEX = TIMER_0;
 static const u32 TIMER_DIVIDER = 80;
 
-const char WIFI_SSID[] = "";
-const char WIFI_PASSWORD[] = "";
+const char WIFI_SSID[] = "subnet_SSID";
+const char WIFI_PASSWORD[] = "secret_SSID";
 
-const IPAddress IP_MQTT_BROKER(192, 168, 1, 111);
+const IPAddress IP_MQTT_BROKER(127, 0, 0, 1);
 const int PORT_MQTT_BROKER = 1883;
+const char USER[] = "broker";
+const char PASSWORD[] = "secret_broker";
+
 const char DEV_ID[] = "Guard00";
 const char DEV_TYPE[] = "ESP32";
-const char USER[] = "broker";
-const char PASSWORD[] = "broker";
 
 const String GUARD_STARTED_TOPIC = String("guards/started");
 const String GUARD_CONFIG_TOPIC = String("guards/") + DEV_ID + "/config";

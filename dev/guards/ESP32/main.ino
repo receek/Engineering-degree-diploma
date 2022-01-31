@@ -126,7 +126,7 @@ void startUpMessageReceiver(String &topic, String &payload) {
 }
 
 void controlMessageReceiver(String &topic, String &payload) {
-    Serial.println("incoming: " + topic + " = " + payload);
+    Serial.printf("Incoming: topic='%s', payload='%s'\n", topic, payload);
     Serial.flush();
 
     if (topic.startsWith(GUARD_PREFIX_TOPIC)) {
@@ -139,8 +139,8 @@ void controlMessageReceiver(String &topic, String &payload) {
             i32 id = getMinerIndex(subtopic);
 
             if(id < 0) {
-                // client.publish(topic, "FAILED");
-                // Serial
+                Serial.printf("Undefined miner: %s\n", subtopic);
+                Serial.flush();
                 return;
             }
 
@@ -150,10 +150,12 @@ void controlMessageReceiver(String &topic, String &payload) {
                 /* Undefined command received */
                 sprintf(response, "command=UNDEFINED, state=%s", miners[id].state);
                 client.publish(miners[id].commandTopic, response);
+                Serial.printf("Undefined command: %s\n", payload);
+                Serial.flush();
                 return;
             } else if (command == Command::StateReport) {
                 /* Set flag */
-                miners[id].statusToReport = true;
+                miners[id].stateToReport = true;
                 return;
             } else if (miners[id].command != Command::Idle) {
                 /* Miner should be in idle command mode */
@@ -170,7 +172,6 @@ void controlMessageReceiver(String &topic, String &payload) {
         }
         else {
             /* Undefined topic */
-            // client.publish(GUARD_ERROR_LOG_TOPIC, String("Undefined topic: ") + topic);
             Serial.printf("Guard received message from unspecified topic: %s\n", topic);
             Serial.flush();
         }
@@ -302,8 +303,8 @@ void loop() {
 
     /* Checking do miners need report state */
     for (u32 i = 0; i < minersCount; ++i) {
-        if (miners[i].statusToReport) {
-            miners[i].sendStatusMessage();
+        if (miners[i].stateToReport) {
+            miners[i].sendStateMessage();
         }
     }
 

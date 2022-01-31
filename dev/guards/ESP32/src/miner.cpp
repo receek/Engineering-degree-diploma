@@ -53,12 +53,12 @@ void Miner::setConfiguration(u8 pinSet_, String & id_) {
     id = id_;
     alertTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/alert";
     commandTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/command";
-    statusTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/status";
+    stateTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/state";
 
     state = State::Undefined;
     command = Command::Idle;
     isCommandRunning = false;
-    statusToReport = false;
+    stateToReport = false;
     timestamp = 0;
     commandStage = 0;
 }
@@ -378,7 +378,7 @@ void Miner::watchMinerState() {
     }
 }
 
-void Miner::sendStatusMessage() {
-    client->publish(statusTopic, getStateName(state));
-    statusToReport = false;
+void Miner::sendStateMessage() {
+    client->publish(stateTopic, getStateName(state));
+    stateToReport = false;
 }

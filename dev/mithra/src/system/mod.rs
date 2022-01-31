@@ -714,11 +714,13 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
             if !miner.included { return; }
 
             if command_status == CommandStatus::Busy  {
-                eprintln!("Mithra made illegal operations while guard was running command!");
+                eprintln!("Mithra made illegal operations while guard was running command on miner='{}'", miner_id);
                 return;
-            }
-            if command_status == CommandStatus::Disallowed {
-                eprintln!("Mithra made illegal operations to miner state!");
+            } else if command_status == CommandStatus::Disallowed {
+                eprintln!("Mithra made illegal operations to miner='{}' state!", miner_id);
+                return;
+            } else if command_status == CommandStatus::Undefined {
+                eprintln!("Mithra sent undefined command to miner='{}'!", miner_id);
                 return;
             }
             
@@ -1099,7 +1101,6 @@ fn schedule_energy_resources(
     Consumed more than can be returned. All miners musts be powered off. 
     */
 
-
     let sum_total_consumed_wh = total_consumed_wh.iter().sum::<f64>();
 
     /* Energy that we can consume from power grid */
@@ -1185,8 +1186,8 @@ fn schedule_energy_resources(
 
     /* Scenario 3:
     Monitor energy production since last scheduling and try to predict the future.
-    - get produced energy and check how much energy consumed miners
-    - if more produced than consumed then try run additional miners
+    - get produced energy and check how much energy miners consumed 
+    - if there is more produced than consumed then try run additional miners
     - else power off running miners to consume less energy than will be produced
     */
 
