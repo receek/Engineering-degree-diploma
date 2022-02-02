@@ -714,13 +714,13 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
             if !miner.included { return; }
 
             if command_status == CommandStatus::Busy  {
-                eprintln!("Mithra made illegal operations while guard was running command on miner='{}'", miner_id);
+                eprintln!("[Main loop] Mithra made illegal operations while guard was running command on miner='{}'", miner_id);
                 return;
             } else if command_status == CommandStatus::Disallowed {
-                eprintln!("Mithra made illegal operations to miner='{}' state!", miner_id);
+                eprintln!("[Main loop] Mithra made illegal operations to miner='{}' state!", miner_id);
                 return;
             } else if command_status == CommandStatus::Undefined {
-                eprintln!("Mithra sent undefined command to miner='{}'!", miner_id);
+                eprintln!("[Main loop] Mithra sent undefined command to miner='{}'!", miner_id);
                 return;
             }
             
@@ -737,7 +737,7 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
                 }
                 (_, _) => {
                     eprintln!(
-                        "Mithra has wrong miner state, miner = {}, state returned from guard = {:?}, mithra state = {:?}",
+                        "[Main loop] Mithra has wrong miner state, miner = {}, state returned from guard = {:?}, mithra state = {:?}",
                         miner_id, miner_state, miner.state
                     );
                     guard_send_command(guards_mqtt, guard_id, &miner_id, "StateReport");
@@ -767,7 +767,7 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
                 }
                 (_, _) => {
                     eprintln!(
-                        "Mithra has wrong miner state, miner = {}, state returned from guard = {:?}, mithra state = {:?}",
+                        "[Main loop] Mithra has wrong miner state, miner = {}, state returned from guard = {:?}, mithra state = {:?}",
                         miner_id, miner_state, miner.state
                     );
                     guard_send_command(guards_mqtt, guard_id, &miner_id, "StateReport");
@@ -779,7 +779,7 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
         GuardData::Configured => {
             /* Change guard state, publish state message to obtain miners status */
             if guard.state != DeviceState::StartingUp {
-                eprintln!("Mithra got guard configured messeage but there was not guard started message!");
+                eprintln!("[Main loop] Mithra got guard configured messeage but there was not guard started message!");
                 guard_reset(guards_mqtt, &guard_id);
                 return;
             }
@@ -826,7 +826,7 @@ fn handle_guard_msg(&mut self, guard_id: &String, ts: NaiveDateTime, data: Guard
 
             /* Mithra should ask miner state only if state is not defined */
             if miner.state != MinerState::Undefined  {
-                eprintln!("Miner state report on guard {} and miner {} while state is known", guard_id, miner_id);
+                eprintln!("[Main loop] Miner state report on guard {} and miner {} while state is known", guard_id, miner_id);
             } else {
                 match state {
                     MinerState::Starting  |
