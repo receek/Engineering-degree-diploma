@@ -63,11 +63,16 @@ public:
     bool isCommandRunning;
     bool stateToReport;
 
+    bool busyToPublish;
+    bool undefinedToPublish;
+
     void setConfiguration(u8, String&);
     void runCommand();
     void watchCommandExecution();
     void watchMinerState();
     void sendStateMessage();
+    void sendCommandBusy();
+    void sendCommandUndefined();
 };
 
 #endif

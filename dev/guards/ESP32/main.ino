@@ -16,8 +16,6 @@ static MQTTClient client;
 static Miner miners[MAX_MINERS];
 static i32 minersCount = -1;
 
-static char response[128];
-
 TimerWrapper& timer = getTimerInstance();
 u64 timestamp = 0;
 u64 pingTimestamp = 0;
@@ -148,8 +146,7 @@ void controlMessageReceiver(String &topic, String &payload) {
 
             if (command == Command::Undefined) {
                 /* Undefined command received */
-                sprintf(response, "command=UNDEFINED, state=%s", miners[id].state);
-                client.publish(miners[id].commandTopic, response);
+                miners[id].undefinedToPublish = true;
                 Serial.printf("Undefined command: %s\n", payload);
                 Serial.flush();
                 return;
@@ -159,8 +156,7 @@ void controlMessageReceiver(String &topic, String &payload) {
                 return;
             } else if (miners[id].command != Command::Idle) {
                 /* Miner should be in idle command mode */
-                sprintf(response, "command=BUSY, state=%s", miners[id].state);
-                client.publish(topic + "/command", response);
+                miners[id].busyToPublish = true;
                 return;
             }
 
@@ -305,6 +301,12 @@ void loop() {
     for (u32 i = 0; i < minersCount; ++i) {
         if (miners[i].stateToReport) {
             miners[i].sendStateMessage();
+        } 
+        if (miners[i].busyToPublish) {
+            miners[i].sendCommandBusy();
+        } 
+        if (miners[i].undefinedToPublish) {
+            miners[i].sendCommandUndefined();
         }
     }
 

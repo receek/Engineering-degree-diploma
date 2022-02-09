@@ -55,6 +55,9 @@ void Miner::setConfiguration(u8 pinSet_, String & id_) {
     commandTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/command";
     stateTopic = GUARD_PREFIX_TOPIC + "miners/" + id + "/state";
 
+    bool busyToPublish = false;
+    bool undefinedToPublish = false;
+
     state = State::Undefined;
     command = Command::Idle;
     isCommandRunning = false;
@@ -381,4 +384,18 @@ void Miner::watchMinerState() {
 void Miner::sendStateMessage() {
     client->publish(stateTopic, getStateName(state));
     stateToReport = false;
+}
+
+void Miner::sendCommandBusy() {
+    char payload[64];
+    sprintf(payload, "command=BUSY, state=%s", getStateName(state));
+    client->publish(commandTopic, payload);
+    busyToPublish = false;
+}
+
+void Miner::sendCommandUndefined() {
+    char payload[64];
+    sprintf(payload, "command=UNDEFINED, state=%s", getStateName(state));
+    client->publish(commandTopic, payload);
+    undefinedToPublish = false;
 }
